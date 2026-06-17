@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from bollinger_bands_strategy import (
+from BollingerBand.core import (
     BUY,
     SELL,
     AdaptiveRegimeConfig,

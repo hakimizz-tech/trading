@@ -41,7 +41,11 @@
         "risk_per_trade": 0.01,
         "fixed_volume": 0.01,
         "stop_loss_pips": 30.0,
-        "take_profit_pips": 60.0
+        "take_profit_pips": 60.0,
+        "journal_enabled": true,
+        "journal_db_path": "trade_results/trade_journal.sqlite",
+        "accounting_enabled": true,
+        "accounting_db_path": "trade_results/trade_accounting.sqlite"
       }
     }
   ]

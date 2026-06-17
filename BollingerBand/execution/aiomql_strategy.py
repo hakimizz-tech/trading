@@ -1,6 +1,6 @@
 """aiomql wrapper for the Bollinger Bands signal module.
 
-The indicator and signal math lives in ``bollinger_bands_strategy.py`` so it can
+The indicator and signal math lives in ``BollingerBand.core`` so it can
 be tested on Linux without MetaTrader 5. This file is the Windows/aiomql bridge.
 """
 
@@ -11,9 +11,11 @@ from typing import Any, ClassVar
 
 import pandas as pd
 
-from bollinger_bands_strategy import BUY, SELL, AdaptiveRegimeConfig, ExitPlan, add_atr, calculate_bollinger_bands
-from bollinger_bands_strategy import generate_bb_rsi_signals, generate_bbma_signals
-from bollinger_bands_strategy import generate_adaptive_bollinger_signals, generate_mean_reversion_signals
+from accounting import SQLiteLedger
+from BollingerBand.core import BUY, SELL, AdaptiveRegimeConfig, ExitPlan, add_atr, calculate_bollinger_bands
+from BollingerBand.core import generate_bb_rsi_signals, generate_bbma_signals
+from BollingerBand.core import generate_adaptive_bollinger_signals, generate_mean_reversion_signals
+from journal import JournalEvent, SQLiteTradeJournal, utc_now
 
 try:
     from aiomql import ForexSymbol, OrderType, ScalpTrader, Sessions, Strategy, TimeFrame, Tracker, Trader
@@ -79,6 +81,10 @@ class BollingerBandsAiomqlStrategy(Strategy if Strategy is not None else object)
         "fixed_volume": 0.01,
         "stop_loss_pips": 30.0,
         "take_profit_pips": 60.0,
+        "journal_enabled": True,
+        "journal_db_path": "trade_results/trade_journal.sqlite",
+        "accounting_enabled": True,
+        "accounting_db_path": "trade_results/trade_accounting.sqlite",
     }
 
     def __init__(
@@ -95,6 +101,8 @@ class BollingerBandsAiomqlStrategy(Strategy if Strategy is not None else object)
         self.tracker = Tracker(snooze=self._interval_seconds())  # type: ignore[operator]
         self.trader = trader or ScalpTrader(symbol=self.symbol)  # type: ignore[operator]
         self.trade_parameters: dict[str, Any] = dict(self.parameters)
+        self.journal = SQLiteTradeJournal(str(self.journal_db_path)) if bool(self.journal_enabled) else None
+        self.ledger = SQLiteLedger(str(self.accounting_db_path)) if bool(self.accounting_enabled) else None
 
     async def find_entry(self) -> None:
         candles = await self.symbol.copy_rates_from_pos(timeframe=self._timeframe(), count=int(self.count))
@@ -124,15 +132,35 @@ class BollingerBandsAiomqlStrategy(Strategy if Strategy is not None else object)
 
         if not self._execution_gate_allows_trade():
             logger.info("Execution gate blocked %s signal on %s", self.tracker.order_type, self.symbol.name)
+            self._journal_signal(status="blocked", mode="live" if bool(self.live_trading) else "dry_run")
             await self.delay(secs=self.tracker.snooze)
             return
 
         if not bool(self.live_trading):
             logger.info("Dry-run signal for %s: %s", self.symbol.name, self.tracker.order_type)
+            self._journal_signal(status="dry_run", mode="dry_run")
             await self.delay(secs=self.tracker.snooze)
             return
 
-        await self.trader.place_trade(order_type=self.tracker.order_type, parameters=self.trade_parameters)
+        trade_id = self._journal_signal(status="submitted", mode="live")
+        try:
+            order_result = await self.trader.place_trade(order_type=self.tracker.order_type, parameters=self.trade_parameters)
+        except Exception as exc:
+            self._journal_event(
+                trade_id=trade_id,
+                event_type="order_error",
+                status="error",
+                message=str(exc),
+                metadata={"order_type": str(self.tracker.order_type)},
+            )
+            raise
+        self._journal_event(
+            trade_id=trade_id,
+            event_type="order_submitted",
+            status="submitted",
+            message="aiomql trader.place_trade completed",
+            metadata={"order_type": str(self.tracker.order_type), "order_result": str(order_result)},
+        )
         await self.delay(secs=self.tracker.snooze)
 
     def _generate_signals(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -169,6 +197,7 @@ class BollingerBandsAiomqlStrategy(Strategy if Strategy is not None else object)
         with_atr = add_atr(signaled, window=exit_plan.atr_length)
         latest = with_atr.iloc[-1]
         entry_price = float(latest["close"])
+        params.update({"entry_price": entry_price, "volume": float(self.fixed_volume)})
         atr_value = float(latest[f"atr_{exit_plan.atr_length}"])
         if not pd.notna(atr_value):
             return params
@@ -216,6 +245,114 @@ class BollingerBandsAiomqlStrategy(Strategy if Strategy is not None else object)
             logger.warning("max_open_positions must be at least 1")
             return False
         return True
+
+    def _journal_signal(self, *, status: str, mode: str) -> str | None:
+        if self.journal is None:
+            return None
+        try:
+            direction = self._journal_direction()
+            entry_price = float(self.trade_parameters.get("entry_price", 0.0))
+            trade_id = self.journal.record_signal_trade(
+                token=self._symbol_name(),
+                direction=direction,
+                entry_price=entry_price,
+                size_sol=float(self.trade_parameters.get("volume", self.fixed_volume)),
+                strategy=self._journal_strategy_tag(),
+                rationale=self._journal_rationale(direction),
+                status=status,
+                mode=mode,
+                source=f"aiomql:{self.name}",
+                stop_price=_optional_float(self.trade_parameters.get("stop_loss_price")),
+                target_price=_optional_float(self.trade_parameters.get("take_profit_price")),
+                risk_reward=_optional_float(self.trade_parameters.get("take_profit_rr")),
+                metadata=self._journal_metadata(),
+            )
+            return trade_id
+        except Exception:
+            logger.exception("Failed to journal %s %s signal on %s", mode, status, self._symbol_name())
+            if bool(self.live_trading):
+                raise
+            return None
+
+    def _journal_event(
+        self,
+        *,
+        trade_id: str | None,
+        event_type: str,
+        status: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        if self.journal is None:
+            return
+        try:
+            self.journal.record_event(
+                JournalEvent(
+                    trade_id=trade_id,
+                    event_time=utc_now(),
+                    event_type=event_type,
+                    token=self._symbol_name(),
+                    strategy=self._journal_strategy_tag(),
+                    direction=self._journal_direction(),
+                    price=_optional_float(self.trade_parameters.get("entry_price")),
+                    size_sol=float(self.trade_parameters.get("volume", self.fixed_volume)),
+                    status=status,
+                    message=message,
+                    metadata=metadata or {},
+                )
+            )
+        except Exception:
+            logger.exception("Failed to journal event %s for %s", event_type, self._symbol_name())
+            if bool(self.live_trading):
+                raise
+
+    def _journal_direction(self) -> str:
+        order_name = str(self.tracker.order_type).upper()
+        if "SELL" in order_name:
+            return "short"
+        return "long"
+
+    def _journal_strategy_tag(self) -> str:
+        signal_mode = str(self.signal_mode)
+        tags = {
+            "mean_reversion": "range-fade",
+            "bb_rsi": "oversold-bounce",
+            "bbma": "trend-continuation",
+            "adaptive": "bollinger-adaptive",
+        }
+        return tags.get(signal_mode, f"bollinger-{signal_mode}")
+
+    def _journal_rationale(self, direction: str) -> str:
+        entry_price = self.trade_parameters.get("entry_price", "unknown")
+        stop_price = self.trade_parameters.get("stop_loss_price", "unknown")
+        target_price = self.trade_parameters.get("take_profit_price", "unknown")
+        return (
+            f"{self._symbol_name()} {direction} {self.signal_mode} Bollinger signal on {self.timeframe}. "
+            f"Entry {entry_price}, stop {stop_price}, target {target_price}."
+        )
+
+    def _journal_metadata(self) -> dict[str, Any]:
+        keys = (
+            "entry_strategy",
+            "exit_strategy",
+            "atr_value",
+            "atr_length",
+            "atr_stop_multiplier",
+            "trailing_atr_multiplier",
+            "trail_activation_rr",
+            "max_hold_bars",
+            "risk_per_trade",
+            "max_spread",
+            "max_open_positions",
+        )
+        metadata = {key: self.trade_parameters.get(key) for key in keys if key in self.trade_parameters}
+        metadata["timeframe"] = str(self.timeframe)
+        metadata["interval"] = str(self.interval)
+        metadata["live_trading"] = bool(self.live_trading)
+        return metadata
+
+    def _symbol_name(self) -> str:
+        return str(getattr(self.symbol, "name", self.symbol))
 
     def _exit_plan(self) -> ExitPlan:
         return ExitPlan(
@@ -276,3 +413,11 @@ def _to_ohlcv_frame(candles: Any) -> pd.DataFrame:
     if "volume" not in data.columns:
         data["volume"] = 0.0
     return data[["open", "high", "low", "close", "volume"]].astype(float)
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if pd.notna(result) else None

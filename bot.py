@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 def build_strategy_instances(settings: BotSettings) -> list[Any]:
     """Build aiomql Strategy instances from settings."""
     from aiomql import ForexSymbol
-    from strategies.bollinger_aiomql import BollingerBandsAiomqlStrategy
+    from BollingerBand.execution.aiomql_strategy import BollingerBandsAiomqlStrategy
 
     registry = {
         "bollinger": BollingerBandsAiomqlStrategy,
