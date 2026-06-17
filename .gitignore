@@ -1,0 +1,8 @@
+aiomql.json
+*.db
+*.sqlite
+logs/
+trade_results/
+.env
+__pycache__/
+*.pyc

@@ -1,0 +1,48 @@
+{
+  "symbols": ["EURUSD", "GBPUSD"],
+  "track_open_positions": true,
+  "strategies": [
+    {
+      "name": "BB Mean Reversion",
+      "type": "bollinger",
+      "enabled": true,
+      "symbols": ["EURUSD", "GBPUSD"],
+      "params": {
+        "signal_mode": "adaptive",
+        "timeframe": "M15",
+        "interval": "M15",
+        "count": 300,
+        "bb_window": 20,
+        "bb_num_std": 2.0,
+        "rsi_window": 14,
+        "rsi_oversold": 30.0,
+        "rsi_overbought": 70.0,
+        "macd_fast": 12,
+        "macd_slow": 26,
+        "macd_signal": 9,
+        "bandwidth_lookback": 120,
+        "squeeze_quantile": 0.2,
+        "wide_quantile": 0.6,
+        "squeeze_release_bars": 5,
+        "breakout_buffer": 0.0,
+        "require_volume_confirmation": false,
+        "volume_window": 20,
+        "volume_multiplier": 1.2,
+        "atr_length": 14,
+        "atr_stop_multiplier": 2.0,
+        "take_profit_rr": 2.0,
+        "trailing_atr_multiplier": 2.5,
+        "trail_activation_rr": 1.0,
+        "max_hold_bars": 50,
+        "timeout_seconds": 3600,
+        "live_trading": false,
+        "max_spread": 30.0,
+        "max_open_positions": 1,
+        "risk_per_trade": 0.01,
+        "fixed_volume": 0.01,
+        "stop_loss_pips": 30.0,
+        "take_profit_pips": 60.0
+      }
+    }
+  ]
+}
