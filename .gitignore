@@ -1,8 +1,57 @@
+# Secrets / local environment
+.env
+.env.*
+!.env.example
 aiomql.json
+
+# Python environments and caches
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Node dependencies and package-manager noise
+node_modules/
+.npm/
+.npx/
+
+# Trading databases, logs, and generated outputs
 *.db
 *.sqlite
+*.sqlite3
 logs/
 trade_results/
-.env
-__pycache__/
-*.pyc
+
+# Market-data downloads and local data caches
+datasets/
+.dukascopy-cache/
+datasets/.dukascopy-cache/
+datasets/_raw_dukascopy/
+datasets/_raw_yfinance/
+
+# Large local research artifacts
+*.parquet
+*.feather
+*.h5
+*.hdf5
+*.pkl
+*.joblib
+*.zip
+*.tar.gz
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+.vscode/
+
+# Local Codex/agent workspace state
+.codex/
+.agents/
