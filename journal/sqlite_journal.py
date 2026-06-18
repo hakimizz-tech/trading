@@ -14,6 +14,18 @@ class TradeJournalError(RuntimeError):
     """Raised when a trade journal record is invalid."""
 
 
+TRADE_STATUSES: tuple[str, ...] = (
+    "signal",
+    "blocked",
+    "submitted",
+    "filled",
+    "partially_filled",
+    "closed",
+    "rejected",
+    "error",
+)
+
+
 @dataclass(frozen=True)
 class JournalTrade:
     """A structured journal record for a planned, open, or closed trade."""
@@ -42,7 +54,7 @@ class JournalTrade:
     risk_reward: float | None = None
     fees_sol: float | None = None
     slippage_bps: float | None = None
-    status: str = "open"
+    status: str = "signal"
     mode: str = "dry_run"
     source: str = "strategy"
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -99,6 +111,8 @@ class SQLiteTradeJournal:
         """Append a lifecycle event and return the SQLite row id."""
         if not event.event_type.strip():
             raise TradeJournalError("event_type is required")
+        if event.status is not None and event.status not in TRADE_STATUSES:
+            raise TradeJournalError(f"status must be one of: {', '.join(TRADE_STATUSES)}")
         payload = {
             "trade_id": event.trade_id,
             "event_time": event.event_time,
@@ -373,6 +387,8 @@ class SQLiteTradeJournal:
             raise TradeJournalError("rationale is required")
         if trade.outcome is not None and trade.outcome not in {"win", "loss", "breakeven"}:
             raise TradeJournalError("outcome must be one of: win, loss, breakeven")
+        if trade.status not in TRADE_STATUSES:
+            raise TradeJournalError(f"status must be one of: {', '.join(TRADE_STATUSES)}")
         if trade.setup_quality is not None and not 1 <= trade.setup_quality <= 10:
             raise TradeJournalError("setup_quality must be in the range 1-10")
 

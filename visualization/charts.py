@@ -88,7 +88,8 @@ def normalize_trades(trades: pd.DataFrame) -> TradeMarkers:
     normalized["side"] = normalized["action"].map(_side_from_action).fillna("unknown")
     if "reason" not in normalized.columns:
         normalized["reason"] = ""
-    normalized["timestamp"] = pd.to_datetime(normalized["timestamp"], errors="ignore")
+    parsed_timestamps = pd.to_datetime(normalized["timestamp"], errors="coerce")
+    normalized["timestamp"] = parsed_timestamps.where(parsed_timestamps.notna(), normalized["timestamp"])
 
     entry_mask = normalized["action"].isin({"BUY", "SELL", "ENTER_LONG", "ENTER_SHORT"})
     exit_mask = normalized["action"].isin({"EXIT_LONG", "EXIT_SHORT"})

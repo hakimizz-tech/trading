@@ -250,6 +250,111 @@ class SQLiteLedger:
             )
         )
 
+    def transaction_by_external_id(self, external_id: str) -> dict[str, Any] | None:
+        """Return an existing ledger transaction for a broker/exchange id."""
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM ledger_transactions WHERE external_id = ? ORDER BY id LIMIT 1", (external_id,)).fetchone()
+        return _decode_row(row) if row is not None else None
+
+    def record_position_close(
+        self,
+        *,
+        symbol: str,
+        realized_pnl: float,
+        commission: float = 0.0,
+        swap: float = 0.0,
+        occurred_at: str | None = None,
+        strategy: str | None = None,
+        external_id: str | None = None,
+        direction: str | None = None,
+        volume: float | None = None,
+        entry_price: float | None = None,
+        exit_price: float | None = None,
+        memo: str | None = None,
+        idempotent: bool = True,
+    ) -> int | None:
+        """Record a confirmed MT5/CFD position close.
+
+        Open fills without realized P&L should stay in the journal until there
+        is confirmed economic activity. This method posts realized P&L and
+        broker costs only, with margin/exposure details stored as metadata.
+        """
+        if external_id and idempotent:
+            existing = self.transaction_by_external_id(external_id)
+            if existing is not None:
+                return int(existing["id"])
+
+        postings: list[LedgerPosting] = []
+        description = memo or f"Close {symbol} position"
+        if realized_pnl > 0:
+            postings.extend(
+                [
+                    LedgerPosting("1010", debit=realized_pnl, memo="Realized P&L cash received"),
+                    LedgerPosting("3010", credit=realized_pnl, memo="Realized trading gain"),
+                ]
+            )
+        elif realized_pnl < 0:
+            loss = abs(realized_pnl)
+            postings.extend(
+                [
+                    LedgerPosting("3010", debit=loss, memo="Realized trading loss"),
+                    LedgerPosting("1010", credit=loss, memo="Realized P&L cash paid"),
+                ]
+            )
+
+        if commission:
+            commission_cost = abs(commission)
+            postings.extend(
+                [
+                    LedgerPosting("4010", debit=commission_cost, memo="Broker commission"),
+                    LedgerPosting("1010", credit=commission_cost, memo="Commission paid"),
+                ]
+            )
+
+        if swap > 0:
+            postings.extend(
+                [
+                    LedgerPosting("1010", debit=swap, memo="Swap cash received"),
+                    LedgerPosting("3010", credit=swap, memo="Positive swap income"),
+                ]
+            )
+        elif swap < 0:
+            swap_cost = abs(swap)
+            postings.extend(
+                [
+                    LedgerPosting("4010", debit=swap_cost, memo="Negative swap cost"),
+                    LedgerPosting("1010", credit=swap_cost, memo="Swap paid"),
+                ]
+            )
+
+        if not postings:
+            return None
+
+        return self.record_transaction(
+            LedgerTransaction(
+                occurred_at=occurred_at or utc_now(),
+                description=description,
+                external_id=external_id,
+                strategy=strategy,
+                symbol=symbol,
+                postings=postings,
+                metadata={
+                    "flow": "position_close",
+                    "direction": direction,
+                    "volume": volume,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "realized_pnl": realized_pnl,
+                    "commission": commission,
+                    "swap": swap,
+                },
+            )
+        )
+
+    def record_broker_fill(self, **kwargs: Any) -> int | None:
+        """Alias for MT5/CFD confirmed close posting."""
+        return self.record_position_close(**kwargs)
+
     def record_fee(
         self,
         *,
@@ -354,6 +459,50 @@ class SQLiteLedger:
             "total_expenses": total_expenses,
             "net_income": total_income - total_expenses,
         }
+
+    def net_income_since(
+        self,
+        start: str,
+        *,
+        strategy: str | None = None,
+        symbol: str | None = None,
+    ) -> float:
+        """Return income minus expenses since an ISO timestamp."""
+        clauses = ["t.occurred_at >= ?", "a.category IN ('income', 'expense')"]
+        params: list[Any] = [start]
+        if strategy is not None:
+            clauses.append("t.strategy = ?")
+            params.append(strategy)
+        if symbol is not None:
+            clauses.append("t.symbol = ?")
+            params.append(symbol)
+        query = f"""
+            SELECT
+                a.category,
+                a.normal_balance,
+                COALESCE(SUM(p.debit), 0) AS debits,
+                COALESCE(SUM(p.credit), 0) AS credits
+            FROM ledger_postings p
+            JOIN ledger_transactions t ON t.id = p.transaction_id
+            JOIN accounts a ON a.code = p.account_code
+            WHERE {' AND '.join(clauses)}
+            GROUP BY a.category, a.normal_balance
+        """
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+
+        income = 0.0
+        expenses = 0.0
+        for row in rows:
+            debits = float(row["debits"])
+            credits = float(row["credits"])
+            normal = str(row["normal_balance"])
+            balance = debits - credits if normal == "debit" else credits - debits
+            if row["category"] == "income":
+                income += balance
+            elif row["category"] == "expense":
+                expenses += balance
+        return income - expenses
 
     def balance_sheet(self) -> dict[str, Any]:
         balances = self.account_balances()

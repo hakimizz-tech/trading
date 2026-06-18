@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from journal import JournalEvent, JournalTrade, SQLiteTradeJournal
+from journal import JournalEvent, JournalTrade, SQLiteTradeJournal, TRADE_STATUSES
 
 
 class SQLiteTradeJournalTests(unittest.TestCase):
@@ -18,7 +18,7 @@ class SQLiteTradeJournalTests(unittest.TestCase):
                 size_sol=0.01,
                 strategy="bollinger-adaptive",
                 rationale="Bollinger adaptive long signal with ATR-defined stop and target.",
-                status="dry_run",
+                status="signal",
                 mode="dry_run",
                 source="aiomql:BollingerBands",
                 stop_price=1.08,
@@ -32,9 +32,10 @@ class SQLiteTradeJournalTests(unittest.TestCase):
 
         self.assertEqual(trade_id, "T-20260617-001")
         self.assertEqual(trades[0]["token"], "EURUSD")
-        self.assertEqual(trades[0]["status"], "dry_run")
+        self.assertEqual(trades[0]["status"], "signal")
         self.assertEqual(trades[0]["metadata"], {"timeframe": "M15"})
         self.assertEqual(events[0]["event_type"], "signal")
+        self.assertIn("filled", TRADE_STATUSES)
 
     def test_updates_exit_and_computes_hold_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -95,6 +96,24 @@ class SQLiteTradeJournalTests(unittest.TestCase):
             trade = journal.get_trade(trade_id)
 
         self.assertEqual(trade["status"], "error")
+
+    def test_rejects_unknown_status(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            journal = SQLiteTradeJournal(Path(tmpdir) / "journal.sqlite")
+
+            with self.assertRaisesRegex(Exception, "status must be one of"):
+                journal.record_signal_trade(
+                    token="EURUSD",
+                    direction="long",
+                    entry_date="2026-06-17T10:00:00Z",
+                    entry_price=1.09,
+                    size_sol=0.01,
+                    strategy="range-fade",
+                    rationale="Signal with invalid status.",
+                    status="dry_run",
+                    mode="dry_run",
+                    source="aiomql:BollingerBands",
+                )
 
 
 if __name__ == "__main__":

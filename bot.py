@@ -6,13 +6,12 @@ It is safe by default: strategies run in dry-run mode unless their params set
 """
 
 from __future__ import annotations
-
 import argparse
 import logging
 from pathlib import Path
 from typing import Any
-
 from bot_config import BotSettings, StrategySpec, load_bot_settings
+from strategy_registry import load_strategy_class
 
 
 logger = logging.getLogger(__name__)
@@ -20,22 +19,13 @@ logger = logging.getLogger(__name__)
 
 def build_strategy_instances(settings: BotSettings) -> list[Any]:
     """Build aiomql Strategy instances from settings."""
-    from aiomql import ForexSymbol
-    from BollingerBand.execution.aiomql_strategy import BollingerBandsAiomqlStrategy
-
-    registry = {
-        "bollinger": BollingerBandsAiomqlStrategy,
-        "bollinger_bands": BollingerBandsAiomqlStrategy,
-    }
     strategies: list[Any] = []
 
     for spec in settings.strategies:
         if not spec.enabled:
             logger.info("Skipping disabled strategy: %s", spec.name)
             continue
-        strategy_cls = registry.get(spec.type)
-        if strategy_cls is None:
-            raise ValueError(f"Unknown strategy type {spec.type!r} for {spec.name!r}")
+        strategy_cls = load_strategy_class(spec.type)
         strategies.extend(_build_for_symbols(strategy_cls, spec))
 
     if not strategies:

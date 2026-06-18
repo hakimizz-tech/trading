@@ -2,7 +2,8 @@
 
 This project separates strategy research from MetaTrader 5 execution:
 
-- `BollingerBand/` is the canonical strategy package for Bollinger Band research, backtesting, execution adapters, and strategy-specific tests.
+- `strategies/BollingerBand/` is the canonical strategy package for Bollinger Band research, backtesting, execution adapters, and strategy-specific tests.
+- `strategies/` is the central namespace for new strategy implementations.
 - `bot.py` loads one or many strategy specs from JSON and runs them through an aiomql `Bot`.
 - `bot_config.py` validates bot settings without requiring aiomql.
 
@@ -11,48 +12,62 @@ Live execution is disabled by default. Use demo/dry-run first.
 ## Linux Research
 
 ```bash
-.venv/bin/python -m unittest discover -s BollingerBand/tests
+.venv/bin/python -m unittest discover -s strategies/BollingerBand/tests
 .venv/bin/python -m unittest discover -s tests
-.venv/bin/python -m BollingerBand.core path/to/ohlcv.csv --date-col time
+.venv/bin/python -m strategies.BollingerBand.core path/to/ohlcv.csv --date-col time
 ```
 
 ## Strategy Packages
 
-Each strategy should live in its own package so more strategies can be added
-without spreading core logic, adapters, and tests across unrelated folders.
+New strategies should live under `strategies/` so more strategies can be added
+without spreading core logic, adapters, and tests across unrelated top-level folders.
 
 ```text
-StrategyName/
-  __init__.py
-  core.py              # pure pandas/numpy indicators, signals, research backtest
-  backtesting/
+strategies/
+  strategy_name/
     __init__.py
-    signals.py         # converts strategy output into long/short entries and exits
-    vectorbt_engine.py # vectorbt adapter for this strategy
-  execution/
-    __init__.py
-    aiomql_strategy.py # aiomql Strategy wrapper for Windows/MT5
-  tests/
-    __init__.py
-    test_core.py
-    test_backtesting.py
+    core.py              # pure pandas/numpy indicators, signals, research backtest
+    backtesting/
+      __init__.py
+      signals.py         # converts strategy output into long/short entries and exits
+      vectorbt_engine.py # vectorbt adapter for this strategy
+    execution/
+      __init__.py
+      aiomql_strategy.py # aiomql Strategy wrapper for Windows/MT5
+    tests/
+      __init__.py
+      test_core.py
+      test_backtesting.py
 ```
 
 The current Bollinger implementation follows this layout:
 
-- `BollingerBand/STRATEGY.md` is the versioned strategy definition, including hypothesis, entry rules, exits, risk parameters, filters, and performance gates.
-- `BollingerBand/core.py` contains pandas/numpy indicator, signal, exit, and research backtest logic that runs on Linux.
-- `BollingerBand/backtesting/signals.py` normalizes Bollinger outputs into long/short entries, exits, and optional stop/take-profit arrays.
-- `BollingerBand/backtesting/vectorbt_engine.py` runs prepared signals through vectorbt.
-- `BollingerBand/execution/aiomql_strategy.py` wraps the tested signal logic as an aiomql `Strategy` for Windows/MT5.
-- `BollingerBand/tests/` covers the strategy package contract.
+- `strategies/BollingerBand/STRATEGY.md` is the versioned strategy definition, including hypothesis, entry rules, exits, risk parameters, filters, and performance gates.
+- `strategies/BollingerBand/core.py` contains pandas/numpy indicator, signal, exit, and research backtest logic that runs on Linux.
+- `strategies/BollingerBand/backtesting/signals.py` normalizes Bollinger outputs into long/short entries, exits, and optional stop/take-profit arrays.
+- `strategies/BollingerBand/backtesting/vectorbt_engine.py` runs prepared signals through vectorbt.
+- `strategies/BollingerBand/execution/aiomql_strategy.py` wraps the tested signal logic as an aiomql `Strategy` for Windows/MT5.
+- `strategies/BollingerBand/tests/` covers the strategy package contract.
+
+The Rising Assets implementation follows the new central strategy namespace:
+
+- `strategies/RisingAssest/STRATEGY.md` is the machine-readable strategy summary based on `strategies/RisingAssest/rising-assets-strategy.md`.
+- `strategies/RisingAssest/core.py` implements monthly momentum scoring, top-asset selection, inverse-volatility weighting, and portfolio backtesting.
+- `strategies/RisingAssest/backtesting/signals.py` prepares portfolio-level target and execution weights.
+- `strategies/RisingAssest/reporting.py` exports standard reports plus target weights and momentum scores.
+
+Rising Assets is a multi-asset portfolio rotation strategy, not a single-symbol aiomql execution strategy yet. Before adding it to `strategy_registry.py`, define broker symbol mapping, rebalance order generation, portfolio reconciliation, and MT5-supported instruments.
 
 Global folders should stay small:
 
 - `accounting/` holds the shared double-entry ledger used after confirmed fills.
-- `bot.py` and `bot_config.py` orchestrate runtime strategy registration and settings.
+- `backtesting/` holds shared signal contracts consumed by backtesting engines.
+- `bot.py` and `bot_config.py` orchestrate runtime settings and bot startup.
+- `execution/` holds shared aiomql execution base classes, broker snapshots, live gates, and sizing.
 - `journal/` holds the shared SQLite trade journal used by all strategies.
+- `reporting/` holds shared strategy report exports; each strategy only supplies overlays or data enrichment.
 - `scripts/` holds environment and operational checks.
+- `strategy_registry.py` maps JSON strategy types to executable strategy classes.
 - `visualization/` holds shared charts for all strategies and trade logs.
 - `tests/` holds cross-strategy or application-level tests only.
 
@@ -71,8 +86,8 @@ Install the optional visualization backend:
 Programmatic use:
 
 ```python
-from BollingerBand.backtesting.vectorbt_engine import VectorBTBacktestConfig, run_bollinger_vectorbt
-from BollingerBand.core import ExitPlan
+from strategies.BollingerBand.backtesting.vectorbt_engine import VectorBTBacktestConfig, run_bollinger_vectorbt
+from strategies.BollingerBand.core import ExitPlan
 
 result = run_bollinger_vectorbt(
     data,
@@ -110,7 +125,7 @@ The module uses pandas/numpy indicators by default and will use TA-Lib for RSI/M
 Example:
 
 ```bash
-.venv/bin/python -m BollingerBand.core data.csv \
+.venv/bin/python -m strategies.BollingerBand.core data.csv \
   --date-col time \
   --strategy adaptive \
   --atr-stop-mult 2.0 \
@@ -157,17 +172,26 @@ Dry-run signals, blocked signals, live order attempts, submitted orders, and
 order errors are recorded. In live mode, journaling failure blocks the order
 attempt so production trades remain auditable.
 
+Live execution gates use a normalized broker snapshot for spread checks, open
+position limits, daily-loss limits, and optional risk-based lot sizing. Keep
+`live_trading` false until these gates have been validated against a Windows
+demo MT5 account for the target broker symbols.
+
 Accounting is separate from journaling. The journal records strategy decisions
 and order lifecycle events; the double-entry ledger records confirmed economic
 activity such as fills, realized exits, fees, funding, and withdrawals. Do not
 post accounting entries for dry-run signals or unfilled submitted orders.
+Confirmed broker closes with realized P&L are posted idempotently by broker
+deal/order id.
 
 ## Adding Strategies
 
-1. Create a strategy package with the same shape as `BollingerBand/`.
+1. Create a strategy package under `strategies/`.
 2. Put pure signal logic in `StrategyName/core.py`; it should accept an OHLCV DataFrame and avoid aiomql imports.
-3. Put vectorbt/backtrader adapters in `StrategyName/backtesting/`.
-4. Put the aiomql wrapper in `StrategyName/execution/aiomql_strategy.py`.
-5. Register the wrapper in `bot.py`.
-6. Add a strategy spec to the JSON settings file.
-7. Keep `live_trading` false until the strategy has been backtested and demo tested.
+3. Return the shared `backtesting.PreparedSignals` contract from `StrategyName/backtesting/signals.py`.
+4. Put vectorbt/backtrader adapters in `StrategyName/backtesting/`.
+5. Put the aiomql wrapper in `StrategyName/execution/aiomql_strategy.py`, inheriting from `execution.StrategyAiomqlBase`.
+6. Use `reporting.generate_strategy_report` for generic reports; supply only strategy-specific overlays or frame enrichment.
+7. Register the wrapper in `strategy_registry.py`.
+8. Add a strategy spec to the JSON settings file.
+9. Keep `live_trading` false until the strategy has been backtested and demo tested.
