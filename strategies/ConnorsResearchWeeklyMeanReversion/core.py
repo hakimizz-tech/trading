@@ -289,6 +289,68 @@ def generate_connors_target_weights(
     return target, trades
 
 
+def build_connors_closed_trades(
+    trades: pd.DataFrame,
+    *,
+    initial_cash: float = 10_000.0,
+) -> pd.DataFrame:
+    """Pair Connors BUY/SELL signal rows into closed round-trip trades."""
+    columns = [
+        "trade_id",
+        "symbol",
+        "entry_timestamp",
+        "exit_timestamp",
+        "entry_price",
+        "exit_price",
+        "size",
+        "pnl",
+        "return_pct",
+        "exit_reason",
+        "holding_days",
+        "status",
+    ]
+    if trades.empty:
+        return pd.DataFrame(columns=columns)
+
+    open_by_symbol: dict[str, dict[str, Any]] = {}
+    rows: list[dict[str, Any]] = []
+    ordered = trades.sort_values("timestamp")
+    for _, row in ordered.iterrows():
+        symbol = str(row["symbol"])
+        action = str(row["action"]).upper()
+        if action == "BUY":
+            open_by_symbol[symbol] = row.to_dict()
+            continue
+        if action != "SELL" or symbol not in open_by_symbol:
+            continue
+
+        entry = open_by_symbol.pop(symbol)
+        entry_time = pd.Timestamp(entry["timestamp"])
+        exit_time = pd.Timestamp(row["timestamp"])
+        entry_price = float(entry["price"])
+        exit_price = float(row["price"])
+        size = float(entry.get("target_weight", 0.0) or 0.0)
+        return_decimal = exit_price / entry_price - 1.0 if entry_price > 0 else 0.0
+        rows.append(
+            {
+                "trade_id": f"{entry_time.isoformat()}:{symbol}",
+                "symbol": symbol,
+                "entry_timestamp": entry_time,
+                "exit_timestamp": exit_time,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "size": size,
+                "pnl": return_decimal * size * initial_cash,
+                "return_pct": return_decimal * 100.0,
+                "exit_reason": row.get("reason", "exit"),
+                "holding_days": int(max((exit_time - entry_time).days, 0)),
+                "status": "closed",
+            }
+        )
+
+    return pd.DataFrame(rows, columns=columns)
+
+
 def backtest_connors_weekly_mean_reversion(
     prices: pd.DataFrame,
     volumes: pd.DataFrame,
@@ -433,8 +495,11 @@ def compute_asset_performance(result: ConnorsWeeklyMeanReversionResult) -> pd.Da
     weighted_returns = result.weights.reindex(asset_returns.index).fillna(0.0) * asset_returns
     rows: list[dict[str, Any]] = []
     trades = result.trades.copy()
+    closed_trades = build_connors_closed_trades(result.trades, initial_cash=result.config.initial_cash)
     if not trades.empty:
         trades["symbol"] = trades["symbol"].astype(str)
+    if not closed_trades.empty:
+        closed_trades["symbol"] = closed_trades["symbol"].astype(str)
 
     for symbol in result.prices.columns:
         weights = result.weights[symbol].reindex(asset_returns.index).fillna(0.0)
@@ -444,8 +509,14 @@ def compute_asset_performance(result: ConnorsWeeklyMeanReversionResult) -> pd.Da
         contribution_equity = (1.0 + contribution).cumprod()
         contribution_drawdown = contribution_equity / contribution_equity.cummax() - 1.0
         symbol_trades = trades.loc[trades["symbol"] == symbol] if not trades.empty else pd.DataFrame()
+        symbol_closed = (
+            closed_trades.loc[closed_trades["symbol"] == symbol] if not closed_trades.empty else pd.DataFrame()
+        )
         entries = symbol_trades.loc[symbol_trades["action"] == "BUY"] if not symbol_trades.empty else pd.DataFrame()
         exits = symbol_trades.loc[symbol_trades["action"] == "SELL"] if not symbol_trades.empty else pd.DataFrame()
+        closed_returns = (
+            pd.to_numeric(symbol_closed["return_pct"], errors="coerce") if not symbol_closed.empty else pd.Series(dtype=float)
+        )
         rows.append(
             {
                 "symbol": symbol,
@@ -457,6 +528,14 @@ def compute_asset_performance(result: ConnorsWeeklyMeanReversionResult) -> pd.Da
                 "exits": int(len(exits)),
                 "weekly_rsi_exits": int((exits.get("reason", pd.Series(dtype=str)) == "weekly_rsi_exit").sum()),
                 "stop_loss_exits": int((exits.get("reason", pd.Series(dtype=str)) == "daily_stop_loss").sum()),
+                "closed_trades": int(len(symbol_closed)),
+                "win_rate": _win_rate(closed_returns),
+                "avg_trade_return_pct": _mean_or_none(closed_returns),
+                "avg_holding_days": _mean_or_none(
+                    pd.to_numeric(symbol_closed.get("holding_days", pd.Series(dtype=float)), errors="coerce")
+                    if not symbol_closed.empty
+                    else pd.Series(dtype=float)
+                ),
                 "asset_total_return_while_held": _compound_return(held_returns),
                 "asset_sharpe_while_held": _series_sharpe(held_returns, result.config.annualization),
                 "strategy_contribution_return": float(contribution.sum()),
@@ -524,6 +603,18 @@ def _series_sharpe(returns: pd.Series, annualization: int) -> float | None:
         return None
     annualized_return = float(clean.mean() * annualization)
     return annualized_return / volatility
+
+
+def _mean_or_none(values: pd.Series) -> float | None:
+    clean = values.replace([np.inf, -np.inf], np.nan).dropna()
+    return float(clean.mean()) if len(clean) else None
+
+
+def _win_rate(returns_pct: pd.Series) -> float | None:
+    clean = returns_pct.replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return None
+    return float((clean > 0.0).mean())
 
 
 def _entry_candidates(

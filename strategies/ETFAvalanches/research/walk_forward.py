@@ -1,4 +1,4 @@
-"""Walk-forward validation for Connors Weekly Mean Reversion."""
+"""Walk-forward validation for ETF Avalanches."""
 
 from __future__ import annotations
 
@@ -8,16 +8,16 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from strategies.ConnorsResearchWeeklyMeanReversion.core import (
-    ConnorsWeeklyMeanReversionConfig,
-    backtest_connors_weekly_mean_reversion,
+from strategies.ETFAvalanches.core import (
+    ETFAvalanchesConfig,
+    backtest_etf_avalanches,
     compute_asset_performance,
     compute_portfolio_metrics,
 )
 
 
 @dataclass(frozen=True)
-class ConnorsWalkForwardConfig:
+class ETFAvalanchesWalkForwardConfig:
     """Chronological walk-forward split settings."""
 
     train_size: int = 756
@@ -29,7 +29,7 @@ class ConnorsWalkForwardConfig:
 
 
 @dataclass(frozen=True)
-class ConnorsWalkForwardFold:
+class ETFAvalanchesWalkForwardFold:
     """One chronological train/test fold."""
 
     fold: int
@@ -41,14 +41,13 @@ class ConnorsWalkForwardFold:
     test_end: pd.Timestamp
 
 
-def split_walk_forward(data: pd.DataFrame, config: ConnorsWalkForwardConfig) -> list[ConnorsWalkForwardFold]:
+def split_walk_forward(data: pd.DataFrame, config: ETFAvalanchesWalkForwardConfig) -> list[ETFAvalanchesWalkForwardFold]:
     """Create chronological train/test folds with optional purge and embargo gaps."""
     _validate_walk_forward_config(config)
     min_required = config.train_size + config.purge_size + config.embargo_size + config.test_size
     if len(data) < min_required:
         raise ValueError(f"Need at least {min_required} rows for walk-forward validation, got {len(data)}")
-
-    folds: list[ConnorsWalkForwardFold] = []
+    folds: list[ETFAvalanchesWalkForwardFold] = []
     offset = 0
     while True:
         if config.window_type == "rolling":
@@ -57,7 +56,6 @@ def split_walk_forward(data: pd.DataFrame, config: ConnorsWalkForwardConfig) -> 
         else:
             train_start = 0
             train_end = config.train_size + offset
-
         effective_train_end = train_end - config.purge_size
         test_start = train_end + config.embargo_size
         test_end = test_start + config.test_size
@@ -65,11 +63,10 @@ def split_walk_forward(data: pd.DataFrame, config: ConnorsWalkForwardConfig) -> 
             break
         if effective_train_end <= train_start:
             raise ValueError("purge_size removes the entire train window")
-
         train_indices = np.arange(train_start, effective_train_end)
         test_indices = np.arange(test_start, test_end)
         folds.append(
-            ConnorsWalkForwardFold(
+            ETFAvalanchesWalkForwardFold(
                 fold=len(folds),
                 train_indices=train_indices,
                 test_indices=test_indices,
@@ -80,49 +77,49 @@ def split_walk_forward(data: pd.DataFrame, config: ConnorsWalkForwardConfig) -> 
             )
         )
         offset += config.step_size
-
     return folds
 
 
-def run_connors_walk_forward(
+def run_etf_avalanches_walk_forward(
     prices: pd.DataFrame,
-    volumes: pd.DataFrame,
+    highs: pd.DataFrame,
     *,
-    walk_config: ConnorsWalkForwardConfig | None = None,
-    strategy_config: ConnorsWeeklyMeanReversionConfig | None = None,
+    walk_config: ETFAvalanchesWalkForwardConfig | None = None,
+    strategy_config: ETFAvalanchesConfig | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float | int | None]]:
-    """Evaluate Connors on unseen test windows using train data as warmup."""
-    wf_config = walk_config or ConnorsWalkForwardConfig()
-    strategy_cfg = strategy_config or ConnorsWeeklyMeanReversionConfig()
+    """Evaluate ETF Avalanches on unseen test windows using train data as warmup."""
+    wf_config = walk_config or ETFAvalanchesWalkForwardConfig()
+    strategy_cfg = strategy_config or ETFAvalanchesConfig()
     clean_prices = prices.sort_index().astype(float).ffill()
-    clean_volumes = volumes.reindex(clean_prices.index).sort_index().astype(float).ffill().fillna(0.0)
+    clean_highs = highs.reindex(clean_prices.index).sort_index().astype(float).ffill()
     records: list[dict[str, object]] = []
     asset_records: list[pd.DataFrame] = []
 
     for fold in split_walk_forward(clean_prices, wf_config):
         train_prices = clean_prices.iloc[fold.train_indices]
-        train_volumes = clean_volumes.iloc[fold.train_indices]
+        train_highs = clean_highs.iloc[fold.train_indices]
         context_start = int(fold.train_indices[0])
         context_end = int(fold.test_indices[-1]) + 1
         context_prices = clean_prices.iloc[context_start:context_end]
-        context_volumes = clean_volumes.iloc[context_start:context_end]
+        context_highs = clean_highs.iloc[context_start:context_end]
         test_index = clean_prices.index[fold.test_indices]
 
-        train_result = backtest_connors_weekly_mean_reversion(train_prices, train_volumes, strategy_cfg)
-        context_result = backtest_connors_weekly_mean_reversion(
-            context_prices,
-            context_volumes,
-            strategy_cfg,
-            trade_start=fold.test_start,
-        )
+        train_result = backtest_etf_avalanches(train_prices, train_highs, strategy_cfg)
+        context_result = backtest_etf_avalanches(context_prices, context_highs, strategy_cfg, trade_start=fold.test_start)
         test_returns = context_result.returns.reindex(test_index).fillna(0.0)
         test_equity = strategy_cfg.initial_cash * (1.0 + test_returns).cumprod()
         test_drawdown = test_equity / test_equity.cummax() - 1.0
-        test_trades = context_result.trades.loc[
-            (pd.to_datetime(context_result.trades["timestamp"]) >= fold.test_start)
-            & (pd.to_datetime(context_result.trades["timestamp"]) <= fold.test_end)
-        ] if not context_result.trades.empty else context_result.trades
-        test_metrics = compute_portfolio_metrics(test_returns, test_equity, test_drawdown, test_trades, strategy_cfg)
+        if not context_result.trades.empty:
+            timestamps = pd.to_datetime(context_result.trades["timestamp"])
+            test_trades = context_result.trades.loc[(timestamps >= fold.test_start) & (timestamps <= fold.test_end)]
+        else:
+            test_trades = context_result.trades
+        if not context_result.closed_trades.empty:
+            exit_times = pd.to_datetime(context_result.closed_trades["exit_timestamp"])
+            test_closed = context_result.closed_trades.loc[(exit_times >= fold.test_start) & (exit_times <= fold.test_end)]
+        else:
+            test_closed = context_result.closed_trades
+        test_metrics = compute_portfolio_metrics(test_returns, test_equity, test_drawdown, test_trades, test_closed, strategy_cfg)
 
         records.append(
             {
@@ -141,29 +138,29 @@ def run_connors_walk_forward(
                 "test_sharpe_ratio": test_metrics.get("sharpe_ratio"),
                 "test_max_drawdown": test_metrics.get("max_drawdown"),
                 "test_trade_count": test_metrics.get("trade_count"),
+                "test_profit_factor": test_metrics.get("profit_factor"),
             }
         )
 
         test_context_result = replace(
             context_result,
             prices=context_result.prices.reindex(test_index),
-            volumes=context_result.volumes.reindex(test_index),
             target_weights=context_result.target_weights.reindex(test_index).fillna(0.0),
             weights=context_result.weights.reindex(test_index).fillna(0.0),
             returns=test_returns,
             equity=test_equity,
             drawdown=test_drawdown,
             trades=test_trades,
+            closed_trades=test_closed,
         )
-        fold_asset_performance = compute_asset_performance(test_context_result)
+        fold_asset_performance = compute_asset_performance(test_context_result.prices, test_context_result.weights, strategy_cfg)
         fold_asset_performance.insert(0, "fold", fold.fold)
         fold_asset_performance.insert(1, "test_start", fold.test_start)
         fold_asset_performance.insert(2, "test_end", fold.test_end)
         asset_records.append(fold_asset_performance)
 
     results = pd.DataFrame(records)
-    non_empty_assets = [frame.dropna(axis=1, how="all") for frame in asset_records if not frame.empty]
-    assets = pd.concat(non_empty_assets, ignore_index=True) if non_empty_assets else pd.DataFrame()
+    assets = pd.concat([frame for frame in asset_records if not frame.empty], ignore_index=True) if asset_records else pd.DataFrame()
     return results, assets, summarize_walk_forward(results)
 
 
@@ -201,7 +198,7 @@ def summarize_walk_forward(results: pd.DataFrame) -> dict[str, float | int | Non
     }
 
 
-def _validate_walk_forward_config(config: ConnorsWalkForwardConfig) -> None:
+def _validate_walk_forward_config(config: ETFAvalanchesWalkForwardConfig) -> None:
     if config.train_size < 50:
         raise ValueError("train_size must be at least 50")
     if config.test_size < 1:

@@ -9,6 +9,7 @@ import pandas as pd
 from strategies.ConnorsResearchWeeklyMeanReversion import (
     ConnorsWeeklyMeanReversionConfig,
     backtest_connors_weekly_mean_reversion,
+    build_connors_closed_trades,
     compute_asset_performance,
     compute_average_dollar_volume,
     compute_regime_filter,
@@ -71,6 +72,17 @@ class ConnorsWeeklyMeanReversionTests(unittest.TestCase):
         self.assertFalse(result.trades.empty)
         self.assertTrue((result.weights.iloc[0] == 0.0).all())
 
+    def test_builds_closed_round_trip_trades(self) -> None:
+        prices, volumes = _sample_connors_data()
+        result = backtest_connors_weekly_mean_reversion(prices, volumes, _fast_config(max_positions=2))
+
+        closed_trades = build_connors_closed_trades(result.trades, initial_cash=result.config.initial_cash)
+
+        self.assertFalse(closed_trades.empty)
+        self.assertIn("return_pct", closed_trades.columns)
+        self.assertIn("holding_days", closed_trades.columns)
+        self.assertTrue(closed_trades["return_pct"].notna().all())
+
     def test_asset_performance_reports_symbol_contribution(self) -> None:
         prices, volumes = _sample_connors_data()
         result = backtest_connors_weekly_mean_reversion(prices, volumes, _fast_config(max_positions=2))
@@ -121,6 +133,9 @@ class ConnorsWeeklyMeanReversionTests(unittest.TestCase):
             self.assertTrue(report.paths["target_weights"].exists())
             self.assertTrue(report.paths["weekly_rsi"].exists())
             self.assertTrue(report.paths["regime"].exists())
+            self.assertTrue(report.paths["closed_trades"].exists())
+            summary = report.trade_summary.iloc[0]
+            self.assertGreater(int(summary["closed_trades"]), 0)
 
     def test_loads_local_yfinance_stock_universe(self) -> None:
         required = {

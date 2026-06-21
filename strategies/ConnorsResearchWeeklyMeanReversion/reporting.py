@@ -12,6 +12,7 @@ from reporting import DEFAULT_REPORT_DIR, StrategyReport, generate_strategy_repo
 from reporting.strategy_report import markdown_report
 from strategies.ConnorsResearchWeeklyMeanReversion.core import (
     ConnorsWeeklyMeanReversionResult,
+    build_connors_closed_trades,
     compute_asset_performance,
 )
 from visualization import (
@@ -41,7 +42,10 @@ def generate_connors_report(
         render_charts=render_charts,
         price_chart_filename="equity_trades.png",
     )
+    closed_trades = build_connors_closed_trades(result.trades, initial_cash=result.config.initial_cash)
     exports = {
+        "signal_trades": result.trades,
+        "closed_trades": closed_trades,
         "target_weights": result.target_weights,
         "weekly_rsi": result.weekly_rsi,
         "regime": result.regime.to_frame(),
@@ -71,17 +75,61 @@ def generate_connors_report(
 
 
 def _to_generic_report_result(result: ConnorsWeeklyMeanReversionResult) -> Any:
+    equity_growth = result.equity / float(result.config.initial_cash)
     data = pd.DataFrame(
         {
-            "close": result.equity,
-            "equity": result.equity,
+            "close": equity_growth,
+            "equity": equity_growth,
             "drawdown": result.drawdown,
             "position": result.weights.drop(columns=[result.config.cash_symbol], errors="ignore").abs().sum(axis=1),
         },
         index=result.equity.index,
     )
-    trades = _chart_trade_actions(result.trades.rename(columns={"symbol": "asset"}).copy())
-    return SimpleNamespace(data=data, trades=trades, metrics=result.metrics)
+    trades = _closed_trade_events_for_report(result, equity_growth)
+    return SimpleNamespace(data=data, trades=trades, equity=equity_growth, drawdown=result.drawdown, metrics=result.metrics)
+
+
+def _closed_trade_events_for_report(
+    result: ConnorsWeeklyMeanReversionResult,
+    equity_growth: pd.Series,
+) -> pd.DataFrame:
+    closed_trades = build_connors_closed_trades(result.trades, initial_cash=result.config.initial_cash)
+    columns = ["trade_id", "timestamp", "action", "price", "side", "size", "pnl", "return_pct", "status", "reason"]
+    if closed_trades.empty:
+        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, Any]] = []
+    for _, trade in closed_trades.iterrows():
+        entry_time = pd.Timestamp(trade["entry_timestamp"])
+        exit_time = pd.Timestamp(trade["exit_timestamp"])
+        rows.append(
+            {
+                "trade_id": trade["trade_id"],
+                "timestamp": entry_time,
+                "action": "ENTER_LONG",
+                "price": _equity_marker_price(equity_growth, entry_time),
+                "side": "long",
+                "size": trade["size"],
+                "pnl": pd.NA,
+                "return_pct": pd.NA,
+                "status": "open",
+                "reason": "weekly_rsi_entry",
+            }
+        )
+        rows.append(
+            {
+                "trade_id": trade["trade_id"],
+                "timestamp": exit_time,
+                "action": "EXIT_LONG",
+                "price": _equity_marker_price(equity_growth, exit_time),
+                "side": "long",
+                "size": trade["size"],
+                "pnl": trade["pnl"],
+                "return_pct": trade["return_pct"],
+                "status": "closed",
+                "reason": trade["exit_reason"],
+            }
+        )
+    return pd.DataFrame(rows, columns=columns).sort_values("timestamp").reset_index(drop=True)
 
 
 def _render_connors_charts(
@@ -152,6 +200,12 @@ def _chart_trade_actions(trades: pd.DataFrame) -> pd.DataFrame:
     chart_trades["action"] = chart_trades["action"].replace({"BUY": "ENTER_LONG", "SELL": "EXIT_LONG"})
     chart_trades["side"] = "long"
     return chart_trades
+
+
+def _equity_marker_price(equity_growth: pd.Series, timestamp: pd.Timestamp) -> float:
+    if timestamp in equity_growth.index:
+        return float(equity_growth.loc[timestamp])
+    return float(equity_growth.reindex([timestamp], method="ffill").iloc[0])
 
 
 def _plot_stock_allocations(weights: pd.DataFrame, *, title: str) -> Any:

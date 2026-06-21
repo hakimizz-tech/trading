@@ -69,14 +69,20 @@ The implementation supports a full 500-stock liquid universe when those datasets
 
 Per-asset contribution summary:
 
-| Symbol | Exposure | Contribution Return | Contribution Sharpe | Contribution Max Drawdown | Entries | Exits | Stop Exits |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| SHY | 99.96% | 12.96% | 0.899 | -5.18% | 0 | 0 | 0 |
-| NVDA | 24.54% | 7.09% | 0.280 | -6.12% | 55 | 54 | 14 |
-| QQQ | 23.87% | 6.09% | 0.504 | -2.58% | 40 | 40 | 4 |
-| AAPL | 27.76% | 6.00% | 0.357 | -3.26% | 49 | 48 | 8 |
-| MSFT | 25.66% | 2.67% | 0.187 | -3.87% | 42 | 41 | 5 |
-| SPY | 0.00% | 0.00% | n/a | 0.00% | 0 | 0 | 0 |
+| Symbol | Exposure | Closed Trades | Win Rate | Avg Trade Return | Avg Hold Days | Contribution Return | Contribution Sharpe | Contribution Max Drawdown | Stop Exits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| SHY | 99.96% | 0 | n/a | n/a | n/a | 12.96% | 0.899 | -5.18% | 0 |
+| NVDA | 24.54% | 53 | 62.26% | 1.82% | 16.21 | 7.09% | 0.280 | -6.12% | 14 |
+| QQQ | 23.87% | 40 | 72.50% | 1.48% | 21.80 | 6.09% | 0.504 | -2.58% | 4 |
+| AAPL | 27.76% | 47 | 72.34% | 1.29% | 21.06 | 6.00% | 0.357 | -3.26% | 8 |
+| MSFT | 25.66% | 41 | 68.29% | 0.65% | 22.90 | 2.67% | 0.187 | -3.87% | 5 |
+| SPY | 0.00% | 0 | n/a | n/a | n/a | 0.00% | n/a | 0.00% | 0 |
+
+Closed-trade report summary:
+
+| Closed Trades | Wins | Losses | Win Rate | Avg Return | Best Trade | Worst Trade |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 181 | 124 | 55 | 68.51% | 1.34% | 22.57% | -19.91% |
 
 - Stored outputs:
   - `trade_results/research/connors_local_dev_metrics.json`
@@ -87,8 +93,10 @@ Per-asset contribution summary:
   - `trade_results/research/connors_local_dev_target_weights.csv`
 - Interpretation:
   - This is a local development baseline only.
+  - The current result behaves like a defensive, low-volatility capital-preservation system rather than a strong Connors mean-reversion return engine.
   - The test universe is too small to replicate the published 500-liquid-stock universe.
-  - `SHY` contributes materially because the strategy spends most of its time in idle allocation with this small candidate universe.
+  - `SHY` dominates exposure and contributes materially because the strategy spends most of its time in idle allocation with this small candidate universe.
+  - The paired-trade report now shows the stock signals are directionally profitable, but stock exposure is too sparse to drive enough portfolio-level return.
 
 ### Out-of-Sample
 
@@ -128,8 +136,10 @@ Per-asset contribution summary:
 - Default export root: `trade_results/reports/`.
 - Per-run artifacts:
   - `report_data.csv`: equity, drawdown, and position timeline.
-  - `trades.csv`: normalized entry/exit trade table.
-  - `trade_summary.csv`: trade count and return summary.
+  - `trades.csv`: normalized paired entry/exit events used by the report summary.
+  - `signal_trades.csv`: raw weekly entry, weekly exit, and daily stop signal rows.
+  - `closed_trades.csv`: paired round-trip trades with entry, exit, P&L, return, exit reason, and holding days.
+  - `trade_summary.csv`: closed-trade count, win/loss count, win rate, P&L, and return summary.
   - `metrics.json`: backtest metrics.
   - `report.md`: human-readable report index.
   - `asset_performance.csv`: per-symbol exposure, contribution, Sharpe, drawdown, entries, exits, and stop exits.
@@ -144,6 +154,16 @@ Per-asset contribution summary:
   - `scripts/run_connors_research.py`.
   - Add `--walk-forward` for OOS validation.
   - Use `--skip-report-charts` for table-only report generation on machines without chart dependencies.
+
+## Required Research Fixes Before Optimization
+
+Do not optimize Connors parameters until the following are complete:
+
+1. Expand the tradable universe toward the intended top 500 liquid US stocks.
+2. Keep `SPY` as the regime filter and `SHY` as idle allocation; do not treat either as a normal stock candidate.
+3. Add benchmark comparisons: `SPY`, `QQQ`, `SHY`, 60/40 `SPY/SHY`, and equal-weight stock universe.
+4. Re-run walk-forward validation on the expanded universe.
+5. Only after the above, run parameter grids for entry RSI, exit RSI, stop-loss percentage, and regime lookback.
 
 ## Live Readiness
 
