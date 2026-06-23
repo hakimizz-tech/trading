@@ -1,5 +1,7 @@
 {
   "login": 12345678,
   "password": "replace_me_locally",
-  "server": "YourBroker-Demo"
+  "server": "YourBroker-Demo",
+  "trade_record_mode": "sql",
+  "root": "."
 }

@@ -61,6 +61,9 @@ def check_project(project: Path) -> int:
         ".gitignore",
         "strategies",
         "bot.py",
+        "scripts/export_aiomql_history.py",
+        "scripts/mt5_health_check.py",
+        "scripts/mt5_order_dry_run.py",
     ]
     for name in expected:
         path = project / name

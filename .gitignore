@@ -55,3 +55,7 @@ datasets/_raw_yfinance/
 # Local Codex/agent workspace state
 .codex/
 .agents/
+
+# work notes
+.aiomql.txt
+.aiomql-*.txt

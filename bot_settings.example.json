@@ -1,6 +1,41 @@
 {
   "symbols": ["EURUSD", "GBPUSD"],
   "track_open_positions": true,
+  "symbol_preflight": true,
+  "aiomql_config": {
+    "trade_record_mode": "sql"
+  },
+  "sessions": [
+    {
+      "name": "london_new_york_overlap",
+      "start": "07:00",
+      "end": "17:00",
+      "timezone": "UTC",
+      "on_end": "close_loss"
+    }
+  ],
+  "trackers": [
+    {
+      "name": "exit_at_profit",
+      "enabled": false,
+      "interval": 5,
+      "on_separate_thread": false,
+      "params": {
+        "profit_amount": 4.0,
+        "live_management": false
+      }
+    },
+    {
+      "name": "exit_at_points",
+      "enabled": false,
+      "interval": 5,
+      "on_separate_thread": false,
+      "params": {
+        "points": 100.0,
+        "live_management": false
+      }
+    }
+  ],
   "strategies": [
     {
       "name": "BB Mean Reversion",

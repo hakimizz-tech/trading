@@ -1,0 +1,154 @@
+Introduction
+In the first part of this series, we explored how to build a trading strategy using the aiomql library. As mentioned previously, the aim is to understand how the various components of the library come together to create a robust trading system. In this tutorial, we will focus on creating functions or callables that can run concurrently in a separate thread or event loop alongside our strategies. These functions can perform a range of tasks, such as handling overall account risk management or acting as exit functions for our strategies.
+
+In the first part of this series, we built a trading strategy using the aiomql library to see how its various components work together to create a robust trading system. Now, in this tutorial, we’ll explore how to build functions — or callables — that can run concurrently with our strategies, either in a separate thread or within an event loop. These functions can perform a range of tasks, such as managing risk for the entire account or acting as exit functions for our strategies, further enhancing the modularity and efficiency of our trading system.
+
+Setup
+This tutorial is a continuation of the previous one, which I highly recommend you read before diving in. To get started, simply clone the branch of the repository that contains only the code from the first part, and make sure that the aiomql library is installed.
+
+git clone -b part_one https://github.com/Ichinga-Samuel/AlgoTrader.git
+pip install aiomql
+mkdir src/trackers
+Recap of Previous Tutorial and Outline for This Tutorial
+In the previous tutorial we built a trading bot for forex pairs, that will run on the finger trap strategy. We also built a trader class for managing our trades as well as two utility functions for detecting swing lows and swing highs when setting stop loss. In this tutorial we are going to build an exit_function for the finger_trap strategy and two other functions, exit_at_point, and exit_at_profit.
+
+The Exit Function
+
+An exit function is a crucial tool in any trading system. It actively monitors the market for each open position and decides whether to keep the position open or close it early before reaching the standard take profit or stop loss levels. This functionality can be implemented in a way that’s either specific to an individual strategy or shared across multiple strategies.
+
+This code implements an asynchronous exit mechanism specifically for the finger trap strategy. The exit function continually monitors open positions to determine if market conditions now warrant closing them before reaching a predefined take profit or stop loss.
+
+Key Components
+Main Loop — finger_trap_exit: Runs as an infinite loop that periodically checks (every interval seconds) if any positions managed by the finger trap strategy meet exit criteria.
+Sleep: The function starts by sleeping for the specified interval (default is 60 seconds).
+Retrieve Exit Tickets: It accesses a dictionary from config.state under the key finger_trap_exit. This dictionary maps ticket numbers (each representing an open position) to exit parameters (like the timeframe, the number of candles to consider (count), and the EMA period to use)
+Filter Positions: It then retrieves all open positions and filters those that are relevant by matching their ticket numbers against the keys in the exit tickets dictionary.
+Concurrent Exit Checks: Using asyncio.gather, the function concurrently calls finger_exit for each of these filtered positions, passing in the respective exit parameters.
+Update State: After attempting exits, it refreshes the list of open positions and cleans the tickets dictionary — removing entries for positions that have been closed — before updating config.state.
+Exit Logic — finger_exit: Checks if a specific position meets the exit condition based on its type (BUY or SELL) using EMA calculations.
+Fetch Market Data: The function creates a Symbol instance using the position’s symbol name and fetches the most recent candles (historical price data) for a given timeframe and count.
+Calculate EMA: It computes an Exponential Moving Average (EMA) on these candles using the provided EMA period, then renames the EMA column for clarity.
+For BUY Positions: The function checks if the most recent candle’s closing price has fallen below the EMA. This situation may signal a weakening upward momentum.
+For SELL Positions: It checks if the closing price has risen above the EMA — potentially indicating that downward momentum is reversing.
+If either condition is met, a boolean flag close is set to True.
+Closing the Position: If the exit condition is satisfied, the function instructs the positions manager to close the given position using await positions.close_position(position=position).
+Modifying the Strategy and The Trader
+We will now the modify the strategy just to specify the exit parameters for the strategy and make it available on the parameters dict.
+
+    def __init__(self, *, symbol: Symbol, params: dict | None = None, trader: Trader = None, sessions: Sessions = None,
+                 name: str = "FingerTrap"):
+        super().__init__(symbol=symbol, params=params, sessions=sessions, name=name)
+        # use the ram instance to set the minimum and maximum amount to trade and the risk to reward ratio
+        ram = RAM(min_amount=5, max_amount=10, risk_to_reward=1)
+        self.trader = trader or SimpleTrader(symbol=self.symbol, ram=ram)
+        # a dataclass object that maintains the state of the strategy from iteration to iteration
+        self.tracker: Tracker = Tracker(snooze=self.ttf.seconds)
+
+        # add the parameters for the exit function to parameters
+        self.parameters["exit_params"] = {"timeframe": TimeFrame.M5, "count": 1344, "ema": 5}
+For the trader will save the ticket of the order in the state attribute of the global config object. The state attribute is a dictionary. The order is saved as shown in the code snippet below. Assuming the order was successful, I access the global configuration’s state (a dictionary) via self.config.state. I use setdefault("finger_trap_exit", {}) to ensure that there's a dictionary ready under the "finger_trap_exit" key. I then store the exit parameters in this state dictionary using the order ticket as the key. This means that later, when monitoring for exit conditions, we can retrieve the exit parameters for each open position by its ticket.
+
+   from logging import getLogger
+
+from aiomql import OrderType, Trader
+
+logger = getLogger(__name__)
+
+
+class SimpleTrader(Trader):
+    """Simple trader class for placing trades"""
+    async def place_trade(self, order_type: OrderType, sl: float, parameters: dict = None):
+        try:
+            # uses the amount as gotten from the RAM instance to determine the amount to risk and volume to trade
+            # take profit is gotten from the risk_to_reward_ratio attribute of the RAM instance
+            await self.create_order_with_sl(order_type=order_type, sl=sl)
+            parameters = parameters or {}
+            # get the exit parameters from the parameters dictionary
+            exit_params = parameters.pop("exit_params", {})
+            self.order.comment = parameters.get("name", "SimpleTrader")
+            osr = await self.send_order()
+            if osr.retcode != 10009 or osr is None:
+                return
+            # set the exit parameters for the trade
+            self.config.state.setdefault("finger_trap_exit", {})[osr.order] = exit_params
+            # set the exit at profit parameter for the trade
+            self.config.state.setdefault("exit_at_profit", {})[osr.order] = parameters.get("exit_at_profit", 4)
+            # set the exit at point parameter for the trade
+            self.config.state.setdefault("exit_at_point", {})[osr.order] = parameters.get("exit_at_point", 100)
+            self.parameters |= parameters
+            await self.record_trade(result=osr, parameters=self.parameters.copy())
+        except Exception as err:
+            logger.error("%s for %s in %s.place_trade", err, self.symbol, self.__class__.__name__)
+Exit At Point
+The “Exit At Point” tracker monitors an open position and automatically closes it once the price moves a specified number of points from the open price, regardless of any set stop loss or take profit levels. Although this example primarily demonstrates different ways to integrate trackers into a bot, it also has practical applications for instance, a trade opened without predefined stop loss and take profit settings can be dynamically managed and closed using this tracker when certain point thresholds are reached.
+
+
+To enable tracking of a position add it to the state dictionary as shown below in the trader class.
+
+self.config.state.setdefault("exit_at_point", {})[osr.order] = parameters.get("exit_at_point", 100)
+Exit at Profit
+This tracking function is almost the same as the close at point. We can close a position if the desired profit has been meet.
+
+
+Modify the trader as shown below to track the positions.
+
+self.config.state.setdefault("exit_at_profit", {})[osr.order] = parameters.get("exit_at_profit", 4)
+The modified Trader is shown below.
+
+    async def place_trade(self, order_type: OrderType, sl: float, parameters: dict = None):
+        try:
+            # uses the amount as gotten from the RAM instance to determine the amount to risk and volume to trade
+            # take profit is gotten from the risk_to_reward_ratio attribute of the RAM instance
+            await self.create_order_with_sl(order_type=order_type, sl=sl)
+            parameters = parameters or {}
+            # get the exit parameters from the parameters dictionary
+            exit_params = self.parameters.pop("exit_params", {})
+            self.order.comment = parameters.get("name", "SimpleTrader")
+            osr = await self.send_order()
+            if osr.retcode != 10009 or osr is None:
+                return
+            # set the exit parameters for the trade
+            self.config.state.setdefault("finger_trap_exit", {})[osr.order] = exit_params
+            # set the exit at profit parameter for the trade
+            self.config.state.setdefault("exit_at_profit", {})[osr.order] = parameters.get("exit_at_profit", 4)
+            # set the exit at point parameter for the trade
+            self.config.state.setdefault("exit_at_point", {})[osr.order] = parameters.get("exit_at_point", 100)
+            self.parameters |= parameters
+            await self.record_trade(result=osr, parameters=self.parameters.copy())
+        except Exception as err:
+            logger.error("%s for %s in %s.place_trade", err, self.symbol, self.__class__.__name__)
+Adding the Trackers to the Bot
+You can add trackers to your bot in three different ways. For synchronous functions or callables, use the add_function method to schedule them on a thread pool executor. For asynchronous functions, the add_coroutine method collects them and runs them together with asyncio.gather, unless you set the on_separate_thread parameter to true, in which case they run on a separate thread.
+
+The code is shown below.
+
+import logging
+
+from aiomql import ForexSymbol, Bot
+
+from ..strategies import FingerTrap
+from ..trackers import exit_at_profit, exit_at_point, finger_trap_exit
+
+logging.basicConfig(level=logging.INFO)
+
+
+def fx_bot():
+    symbols = ['EURUSD', 'GBPUSD', 'USDJPY', 'USDCHF', 'USDCAD', 'AUDUSD', 'NZDUSD', 'EURJPY', 'EURGBP', 'EURCHF']
+    syms = [ForexSymbol(name=symbol) for symbol in symbols]
+    strategies = [FingerTrap(symbol=symbol) for symbol in syms]
+    bot = Bot()  # create a bot instance
+    bot.add_strategies(strategies=strategies)  # add the strategies to the bot
+    # just to demonstrate the two main ways of adding trackers to the bot
+    # exit_at_profit and exit_at_point are trackers that are added to the bot on the same thread
+    # and both will run on the same event loop asynchronously
+    bot.add_coroutine(coroutine=exit_at_profit, interval=5)  # add the exit at profit tracker
+    bot.add_coroutine(coroutine=exit_at_point, interval=5)  # add the exit at point tracker
+    # finger_trap_exit is a tracker that is added to the bot on a separate thread.
+    # this is useful when you have a tracker that takes a long time to run and you don't want it to block the main
+    # event loop, also for critical trackers that you don't want to be affected by the main event loop
+    bot.add_coroutine(coroutine=finger_trap_exit, interval=60, on_separate_thread=True)
+    bot.execute()
+Conclusion
+In conclusion, exit functions and trackers are essential components of high-frequency trading, empowering traders to monitor and manage their positions in real time, mitigate risks, and maximize profits. In our next article, we’ll restructure our code to offer a more modular approach to position management, further streamlining your trading system. You can access all the code we’ve developed so far on our repository. If you enjoyed this article, please give it a big clap, follow me on Medium, and consider buying me a coffee to support my efforts in developing this library and sharing more tutorials.
+
+
