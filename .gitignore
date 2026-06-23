@@ -57,5 +57,10 @@ datasets/_raw_yfinance/
 .agents/
 
 # work notes
-.aiomql.txt
-.aiomql-*.txt
+aiomql.txt
+aiomql-*.txt
+
+# Strategy source papers / local notes
+strategies/**/*.md
+!strategies/**/STRATEGY.md
+!strategies/README.md
