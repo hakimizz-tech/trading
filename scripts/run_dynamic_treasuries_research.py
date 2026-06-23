@@ -8,6 +8,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -67,7 +68,7 @@ def main() -> int:
     readiness_path.write_text(json.dumps(readiness, indent=2, sort_keys=True), encoding="utf-8")
 
     metrics_path = args.output_dir / f"{args.name}_metrics.json"
-    metrics = dict(result.metrics)
+    metrics: dict[str, Any] = dict(result.metrics)
     metrics["symbols"] = list(prices.columns)
     metrics["generated_at"] = datetime.now(tz=UTC).isoformat()
     metrics["average_duration"] = float(result.duration_exposure.mean())

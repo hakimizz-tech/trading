@@ -12,6 +12,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 import numpy as np
@@ -303,9 +304,9 @@ def load_price_csv(path: str | Path, *, symbol: str | None = None) -> pd.Series:
     return series
 
 
-def load_price_universe(paths: dict[str, str | Path] | list[str | Path], *, join: str = "inner") -> pd.DataFrame:
+def load_price_universe(paths: Mapping[str, str | Path] | Sequence[str | Path], *, join: str = "inner") -> pd.DataFrame:
     """Load multiple price CSVs and align them into one price matrix."""
-    if isinstance(paths, dict):
+    if isinstance(paths, Mapping):
         series = [load_price_csv(path, symbol=symbol) for symbol, path in paths.items()]
     else:
         series = [load_price_csv(path) for path in paths]

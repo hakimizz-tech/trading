@@ -12,6 +12,7 @@ The strategy sells short bear-market rallies in global/sector equity ETFs:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -126,12 +127,12 @@ class ETFAvalanchesResult:
 
 
 def load_etf_avalanche_ohlcv(
-    paths: dict[str, str | Path] | list[str | Path],
+    paths: Mapping[str, str | Path] | Sequence[str | Path],
     *,
     join: str = "inner",
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Load ETF OHLCV CSVs and return aligned close, high, and volume matrices."""
-    if isinstance(paths, dict):
+    if isinstance(paths, Mapping):
         items = list(paths.items())
     else:
         items = [(Path(path).parent.name.upper().replace(" ", "_"), path) for path in paths]

@@ -8,6 +8,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -65,7 +66,7 @@ def main() -> int:
     asset_performance = compute_asset_performance(result)
     asset_performance.to_csv(args.output_dir / f"{args.name}_asset_performance.csv", index=False)
     metrics_path = args.output_dir / f"{args.name}_metrics.json"
-    metrics = dict(result.metrics)
+    metrics: dict[str, Any] = dict(result.metrics)
     metrics["symbols"] = list(prices.columns)
     metrics["generated_at"] = datetime.now(tz=UTC).isoformat()
     metrics_path.write_text(json.dumps(metrics, indent=2, sort_keys=True), encoding="utf-8")

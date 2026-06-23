@@ -10,6 +10,7 @@ The strategy is a long-only weekly US Treasury duration-rotation system:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -94,12 +95,12 @@ class DynamicTreasuriesBacktestResult:
 
 
 def load_dynamic_treasuries_prices(
-    paths: dict[str, str | Path] | list[str | Path],
+    paths: Mapping[str, str | Path] | Sequence[str | Path],
     *,
     join: str = "inner",
 ) -> pd.DataFrame:
     """Load Treasury ETF OHLCV CSVs and return an aligned close matrix."""
-    if isinstance(paths, dict):
+    if isinstance(paths, Mapping):
         items = list(paths.items())
     else:
         items = [(Path(path).parent.name.upper().replace(" ", "_"), path) for path in paths]

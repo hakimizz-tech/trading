@@ -8,7 +8,7 @@ import csv
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 
 def main() -> None:
@@ -72,7 +72,7 @@ def _broker_external_ids(path: Path) -> set[str]:
         return {str(row[id_column]) for row in reader if row.get(id_column)}
 
 
-def _first_existing(columns: list[str], candidates: tuple[str, ...]) -> str | None:
+def _first_existing(columns: Sequence[str], candidates: tuple[str, ...]) -> str | None:
     normalized = {column.lower(): column for column in columns}
     for candidate in candidates:
         if candidate in normalized:

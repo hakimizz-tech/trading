@@ -9,6 +9,7 @@ them, writes CSV, and shuts the terminal connection down.
 from __future__ import annotations
 
 import argparse
+import importlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,13 +69,12 @@ def _parse_args() -> argparse.Namespace:
 
 def _import_mt5():
     try:
-        import MetaTrader5 as mt5
+        return importlib.import_module("MetaTrader5")
     except ImportError as exc:  # pragma: no cover - depends on Windows MT5 environment.
         raise RuntimeError(
             "MetaTrader5 is not installed. Run this on Windows with MetaTrader 5 "
             "and install the official package in that environment."
         ) from exc
-    return mt5
 
 
 def _resolve_timeframe(mt5, value: str) -> int:

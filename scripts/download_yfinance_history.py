@@ -12,7 +12,7 @@ import json
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -178,6 +178,7 @@ def _read_tickers_file(path: Path) -> list[str]:
 
 
 def _import_yfinance():
+    """check if yfinance exists and import it"""
     try:
         import yfinance as yf
     except ImportError as exc:  # pragma: no cover - depends on optional market-data extras.
@@ -191,9 +192,9 @@ def _import_yfinance():
 def _extract_ticker_history(raw: pd.DataFrame, ticker: str, *, multi_ticker: bool) -> pd.DataFrame:
     if isinstance(raw.columns, pd.MultiIndex):
         if ticker in raw.columns.get_level_values(-1):
-            return raw.xs(ticker, axis=1, level=-1, drop_level=True).dropna(how="all")
+            return cast(pd.DataFrame, raw.xs(ticker, axis=1, level=-1, drop_level=True)).dropna(how="all")
         if ticker in raw.columns.get_level_values(0):
-            return raw.xs(ticker, axis=1, level=0, drop_level=True).dropna(how="all")
+            return cast(pd.DataFrame, raw.xs(ticker, axis=1, level=0, drop_level=True)).dropna(how="all")
         raise KeyError(f"{ticker} not present in yfinance response")
     if multi_ticker:
         raise KeyError(f"{ticker} not present in flattened yfinance response")

@@ -13,6 +13,7 @@ The strategy is a long-only weekly stock mean-reversion system:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -102,12 +103,12 @@ class ConnorsWeeklyMeanReversionResult:
 
 
 def load_connors_ohlcv_universe(
-    paths: dict[str, str | Path] | list[str | Path],
+    paths: Mapping[str, str | Path] | Sequence[str | Path],
     *,
     join: str = "inner",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load stock/ETF OHLCV CSVs and return aligned close and volume matrices."""
-    if isinstance(paths, dict):
+    if isinstance(paths, Mapping):
         items = list(paths.items())
     else:
         items = [(Path(path).parent.name.upper().replace(" ", "_"), path) for path in paths]
