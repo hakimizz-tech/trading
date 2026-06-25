@@ -1,23 +1,65 @@
 """Pure-Python execution support shared by live strategy adapters."""
 
-from execution.aiomql_base import (
-    OrderType,
-    ScalpTrader,
-    Sessions,
-    SnapshotProvider,
-    StrategyAiomqlBase,
-    TimeFrame,
-    Tracker,
-    Trader,
-    aiomql_available,
-    broker_snapshot_from_sources,
-    extract_broker_fill,
-    optional_float,
-    optional_string,
-    require_aiomql,
-    resolve_timeframe,
-    to_ohlcv_frame,
-)
+from typing import Any
+
+try:
+    from execution.aiomql_base import (
+        OrderType,
+        ScalpTrader,
+        Sessions,
+        SnapshotProvider,
+        StrategyAiomqlBase,
+        TimeFrame,
+        Tracker,
+        Trader,
+        aiomql_available,
+        broker_snapshot_from_sources,
+        extract_broker_fill,
+        optional_float,
+        optional_string,
+        require_aiomql,
+        resolve_timeframe,
+        to_ohlcv_frame,
+    )
+except ImportError as exc:  # pragma: no cover - depends on optional aiomql/pandas runtime.
+    _AIOMQL_BASE_IMPORT_ERROR = exc
+    OrderType = ScalpTrader = Sessions = SnapshotProvider = StrategyAiomqlBase = TimeFrame = Tracker = Trader = None
+
+    def aiomql_available() -> bool:
+        return False
+
+    def require_aiomql() -> None:
+        raise RuntimeError(
+            "aiomql execution support is unavailable in this environment. Install the aiomql runtime "
+            "dependencies on the Windows/MT5 execution host."
+        ) from _AIOMQL_BASE_IMPORT_ERROR
+
+    def broker_snapshot_from_sources(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def extract_broker_fill(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def resolve_timeframe(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def to_ohlcv_frame(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def optional_float(value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def optional_string(value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+from execution.adapters import BrokerAdapter, BrokerDataAdapter, BrokerExecutionAdapter
 from execution.gates import ExecutionGateResult, evaluate_live_execution_gate
 from execution.sizing import PositionSizeResult, calculate_risk_position_size
 from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, OpenPosition, SymbolContract
@@ -25,6 +67,9 @@ from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, OpenPos
 __all__ = [
     "AccountSnapshot",
     "BrokerFill",
+    "BrokerAdapter",
+    "BrokerDataAdapter",
+    "BrokerExecutionAdapter",
     "BrokerSnapshot",
     "OpenPosition",
     "PositionSizeResult",

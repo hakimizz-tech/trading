@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -96,10 +97,11 @@ def to_ohlcv_frame(
     symbol: str | None = None,
     preserve_extra: bool = True,
 ) -> pd.DataFrame:
-    """Convert a DataFrame-like object into canonical OHLCV format."""
-    frame = pd.DataFrame(data).copy()
+    """Convert DataFrame-like, MT5 rates, or aiomql Candles into canonical OHLCV."""
+    frame = _coerce_ohlcv_input(data)
     frame.columns = [_normalize_column(column) for column in frame.columns]
     frame = frame.rename(columns=_rename_columns(frame.columns))
+    
     if "time" in frame.columns and not isinstance(frame.index, pd.DatetimeIndex):
         parsed_time = _parse_time_column(frame["time"])
         if parsed_time.notna().any():
@@ -109,11 +111,12 @@ def to_ohlcv_frame(
     if missing:
         raise ValueError(f"OHLCV data missing required columns: {missing}")
     if "volume" not in frame.columns:
-        frame["volume"] = 0.0
+        volume_column = _first_existing(frame, ("tick_volume", "real_volume"))
+        frame["volume"] = frame[volume_column] if volume_column else 0.0
 
     keep = OHLCV_COLUMNS.copy()
     if preserve_extra:
-        keep.extend(column for column in ("spread", "tick_volume", "real_volume") if column in frame.columns)
+        keep.extend(column for column in ("spread", "tick_volume", "real_volume", "index") if column in frame.columns)
     frame = frame[keep].copy()
     for column in frame.columns:
         frame[column] = _parse_number_series(frame[column])
@@ -186,7 +189,7 @@ def detect_gaps(df: pd.DataFrame, expected_freq: str) -> pd.DatetimeIndex:
     """Find missing timestamps for a declared frequency."""
     validated = validate_ohlcv(df)
     full_index = pd.date_range(validated.index.min(), validated.index.max(), freq=expected_freq, tz="UTC")
-    return full_index.difference(validated.index)
+    return full_index.difference(pd.DatetimeIndex(validated.index))
 
 
 def handle_gaps(
@@ -241,7 +244,8 @@ def flag_anomalies(df: pd.DataFrame) -> pd.DataFrame:
 def resample_ohlcv(df: pd.DataFrame, target_freq: str) -> pd.DataFrame:
     """Resample OHLCV to a coarser timeframe."""
     validated = validate_ohlcv(df)
-    resampled = validated[OHLCV_COLUMNS].resample(target_freq).agg(OHLCV_RESAMPLE_RULES)
+    agg_rules: Any = OHLCV_RESAMPLE_RULES
+    resampled = validated[OHLCV_COLUMNS].resample(target_freq).agg(agg_rules)
     return resampled.dropna(subset=["close"])
 
 
@@ -328,8 +332,9 @@ def _extract_ohlcv(data: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, bool]:
     else:
         raise ValueError(f"{path} must include OHLC columns or a single price/adjusted-close column")
 
-    if "volume" in data.columns:
-        result["volume"] = _parse_volume_series(data["volume"])
+    volume_column = _first_existing(data, ("volume", "tick_volume", "real_volume"))
+    if volume_column is not None:
+        result["volume"] = _parse_volume_series(data[volume_column])
     else:
         result["volume"] = 0.0
     if not price_only:
@@ -339,6 +344,49 @@ def _extract_ohlcv(data: pd.DataFrame, path: Path) -> tuple[pd.DataFrame, bool]:
     if "spread" in data.columns:
         result["spread"] = _parse_number_series(data["spread"])
     return result, price_only
+
+
+def _coerce_ohlcv_input(data: Any) -> pd.DataFrame:
+    """Coerce common OHLCV sources, including aiomql Candles, into a DataFrame."""
+    candles_data = getattr(data, "data", None)
+    if candles_data is not None:
+        return pd.DataFrame(candles_data).copy()
+    if isinstance(data, pd.DataFrame):
+        return data.copy()
+    if isinstance(data, Mapping):
+        return pd.DataFrame(data).copy()
+    if isinstance(data, Iterable) and not isinstance(data, (str, bytes)):
+        items = list(data)
+        if items and _looks_like_candle(items[0]):
+            return pd.DataFrame([_candle_to_mapping(item) for item in items]).copy()
+        return pd.DataFrame(items).copy()
+    return pd.DataFrame(data).copy()
+
+
+def _looks_like_candle(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        return False
+    candle_attrs = ("time", "open", "high", "low", "close")
+    return all(hasattr(value, attr) for attr in candle_attrs) or hasattr(value, "dict")
+
+
+def _candle_to_mapping(value: Any) -> dict[str, Any]:
+    if isinstance(value, Mapping):
+        return dict(value)
+    dict_attr = getattr(value, "dict", None)
+    if callable(dict_attr):
+        mapped = dict_attr()
+        if isinstance(mapped, Mapping):
+            return dict(mapped)
+    if isinstance(dict_attr, Mapping):
+        return dict(dict_attr)
+    asdict = getattr(value, "_asdict", None)
+    if callable(asdict):
+        mapped = asdict()
+        if isinstance(mapped, Mapping):
+            return dict(mapped)
+    fields = ("time", "open", "high", "low", "close", "tick_volume", "real_volume", "spread", "Index")
+    return {field: getattr(value, field) for field in fields if hasattr(value, field)}
 
 
 def _parse_timestamp(data: pd.DataFrame, path: Path) -> pd.Series:
@@ -366,7 +414,7 @@ def _parse_time_column(values: pd.Series) -> pd.Series:
 
 def _coerce_datetime_index(index: pd.Index) -> pd.DatetimeIndex:
     dt_index = pd.DatetimeIndex(pd.to_datetime(index, errors="coerce", utc=True))
-    if dt_index.isna().any():
+    if dt_index.hasnans:
         raise ValueError("OHLCV index contains invalid timestamps")
     return dt_index
 
@@ -383,10 +431,8 @@ def _rename_columns(columns: pd.Index | list[str]) -> dict[str, str]:
         "trade_date": "trade_date",
         "vol.": "volume",
         "vol": "volume",
-        "tick volume": "volume",
-        "tick_volume": "volume",
-        "real volume": "volume",
-        "real_volume": "volume",
+        "tick volume": "tick_volume",
+        "real volume": "real_volume",
         "o": "open",
         "h": "high",
         "l": "low",

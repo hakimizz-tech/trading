@@ -72,13 +72,29 @@ def _build_for_symbols(strategy_cls: type[Any], spec: StrategySpec) -> list[Any]
 
     return [
         strategy_cls(
-            symbol=aiomql.ForexSymbol(name=symbol_name),
+            symbol=_build_symbol(aiomql, symbol_name, spec.symbol_class),
             params=spec.params,
             sessions=sessions,
             name=f"{spec.name}:{symbol_name}",
         )
         for symbol_name in spec.symbols
     ]
+
+
+def _build_symbol(aiomql: ModuleType, symbol_name: str, symbol_class: str = "forex") -> Any:
+    """Build a documented aiomql Symbol wrapper for one broker symbol."""
+    normalized = symbol_class.strip().lower()
+    if normalized == "forex":
+        symbol_cls = getattr(aiomql, "ForexSymbol", None)
+        if symbol_cls is None:
+            raise RuntimeError("symbol_class='forex' requires aiomql.ForexSymbol support.")
+        return symbol_cls(name=symbol_name)
+    if normalized in {"symbol", "generic"}:
+        symbol_cls = getattr(aiomql, "Symbol", None)
+        if symbol_cls is None:
+            raise RuntimeError("symbol_class='symbol' requires aiomql.Symbol support.")
+        return symbol_cls(name=symbol_name)
+    raise ValueError("symbol_class must be one of: forex, symbol, generic")
 
 
 def add_configured_trackers(bot: Any, trackers: list[TrackerSpec]) -> None:
@@ -100,7 +116,15 @@ def configure_aiomql(aiomql: ModuleType, settings: BotSettings) -> Any | None:
     config_cls = getattr(aiomql, "Config", None)
     if config_cls is None:
         raise RuntimeError("Configured aiomql_config requires aiomql.Config support.")
-    return config_cls(**settings.aiomql_config)
+    config_settings = dict(settings.aiomql_config)
+    load_keys = {"filename", "config_file", "root"}
+    if load_keys & set(config_settings):
+        config = config_cls()
+        load_config = getattr(config, "load_config", None)
+        if not callable(load_config):
+            return config_cls(**config_settings)
+        return load_config(**config_settings)
+    return config_cls(**config_settings)
 
 
 def _load_aiomql() -> ModuleType:

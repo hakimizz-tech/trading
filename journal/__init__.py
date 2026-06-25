@@ -1,10 +1,11 @@
-"""SQLite trade journal shared by all strategies."""
+"""Trade journal shared by all strategies."""
 
-from journal.sqlite_journal import (
+from journal.backends import JournalBackend, SQLiteJournalBackend
+from journal.trade_journal import (
     JournalEvent,
     JournalTrade,
-    SQLiteTradeJournal,
     TRADE_STATUSES,
+    TradeJournal,
     TradeJournalError,
     utc_now,
 )
@@ -12,8 +13,10 @@ from journal.sqlite_journal import (
 __all__ = [
     "JournalEvent",
     "JournalTrade",
-    "SQLiteTradeJournal",
+    "JournalBackend",
+    "SQLiteJournalBackend",
     "TRADE_STATUSES",
+    "TradeJournal",
     "TradeJournalError",
     "utc_now",
 ]

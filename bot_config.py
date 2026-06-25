@@ -40,6 +40,7 @@ class StrategySpec:
     type: str
     enabled: bool = True
     symbols: list[str] = field(default_factory=list)
+    symbol_class: str = "forex"
     params: dict[str, Any] = field(default_factory=dict)
     sessions: list[SessionSpec] = field(default_factory=list)
 
@@ -99,6 +100,9 @@ def _parse_strategy_spec(raw: object, global_symbols: list[str], global_sessions
     symbols = _string_list(raw.get("symbols", global_symbols), field_name=f"{name}.symbols")
     if not symbols:
         raise ValueError(f"Strategy {name!r} must define at least one symbol")
+    symbol_class = str(raw.get("symbol_class") or "forex").strip().lower()
+    if symbol_class not in {"forex", "symbol", "generic"}:
+        raise ValueError(f"Strategy {name!r} symbol_class must be one of: forex, symbol, generic")
 
     sessions = _parse_sessions(raw.get("sessions", global_sessions), field_name=f"{name}.sessions")
     return StrategySpec(
@@ -106,6 +110,7 @@ def _parse_strategy_spec(raw: object, global_symbols: list[str], global_sessions
         type=strategy_type,
         enabled=bool(raw.get("enabled", True)),
         symbols=symbols,
+        symbol_class=symbol_class,
         params=dict(params),
         sessions=sessions,
     )

@@ -55,6 +55,24 @@ def test_build_sessions_constructs_aiomql_sessions() -> None:
     assert sessions.sessions[0].kwargs["on_end"] == "close_loss"
 
 
+def test_build_symbol_uses_forex_symbol_by_default() -> None:
+    aiomql = SimpleNamespace(ForexSymbol=FakeForexSymbol, Symbol=FakeGenericSymbol)
+
+    symbol = bot._build_symbol(aiomql, "EURUSD")
+
+    assert isinstance(symbol, FakeForexSymbol)
+    assert symbol.name == "EURUSD"
+
+
+def test_build_symbol_can_use_generic_symbol() -> None:
+    aiomql = SimpleNamespace(ForexSymbol=FakeForexSymbol, Symbol=FakeGenericSymbol)
+
+    symbol = bot._build_symbol(aiomql, "BTCUSD", "symbol")
+
+    assert isinstance(symbol, FakeGenericSymbol)
+    assert symbol.name == "BTCUSD"
+
+
 def test_configure_aiomql_applies_config_settings() -> None:
     aiomql = SimpleNamespace(Config=FakeConfig)
     settings = BotSettings(aiomql_config={"trade_record_mode": "sql", "root": "trade_results"})
@@ -62,7 +80,27 @@ def test_configure_aiomql_applies_config_settings() -> None:
     config = bot.configure_aiomql(aiomql, settings)
 
     assert isinstance(config, FakeConfig)
-    assert config.kwargs == {"trade_record_mode": "sql", "root": "trade_results"}
+    assert config.load_config_kwargs == {"trade_record_mode": "sql", "root": "trade_results"}
+
+
+def test_configure_aiomql_uses_direct_attributes_without_reload_keys() -> None:
+    aiomql = SimpleNamespace(Config=FakeConfig)
+    settings = BotSettings(aiomql_config={"trade_record_mode": "sql", "record_trades": True})
+
+    config = bot.configure_aiomql(aiomql, settings)
+
+    assert isinstance(config, FakeConfig)
+    assert config.kwargs == {"trade_record_mode": "sql", "record_trades": True}
+
+
+def test_configure_aiomql_loads_named_config_file() -> None:
+    aiomql = SimpleNamespace(Config=FakeConfig)
+    settings = BotSettings(aiomql_config={"filename": "config.json", "reload": True})
+
+    config = bot.configure_aiomql(aiomql, settings)
+
+    assert isinstance(config, FakeConfig)
+    assert config.load_config_kwargs == {"filename": "config.json", "reload": True}
 
 
 def test_add_configured_trackers_schedules_enabled_trackers() -> None:
@@ -135,9 +173,24 @@ class FakeSessions:
         self.sessions = sessions
 
 
+class FakeForexSymbol:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+
+
+class FakeGenericSymbol:
+    def __init__(self, *, name: str) -> None:
+        self.name = name
+
+
 class FakeConfig:
     def __init__(self, **kwargs: object) -> None:
         self.kwargs = kwargs
+        self.load_config_kwargs: dict[str, object] | None = None
+
+    def load_config(self, **kwargs: object) -> "FakeConfig":
+        self.load_config_kwargs = kwargs
+        return self
 
 
 class FakeBot:

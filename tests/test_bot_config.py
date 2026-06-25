@@ -38,6 +38,36 @@ class BotConfigTests(unittest.TestCase):
         self.assertEqual(len(settings.strategies), 2)
         self.assertEqual(settings.strategies[0].symbols, ["EURUSD"])
         self.assertEqual(settings.strategies[1].symbols, ["GBPUSD"])
+        self.assertEqual(settings.strategies[0].symbol_class, "forex")
+
+    def test_strategy_symbol_class_can_use_generic_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "settings.json"
+            path.write_text(
+                """
+                {
+                  "strategies": [
+                    {"name": "Crypto", "type": "bollinger", "symbols": ["BTCUSD"], "symbol_class": "symbol"}
+                  ]
+                }
+                """,
+                encoding="utf-8",
+            )
+
+            settings = load_bot_settings(path)
+
+        self.assertEqual(settings.strategies[0].symbol_class, "symbol")
+
+    def test_rejects_unknown_symbol_class(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "settings.json"
+            path.write_text(
+                '{"strategies": [{"name": "Bad", "type": "bollinger", "symbols": ["BTCUSD"], "symbol_class": "banana"}]}',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "symbol_class"):
+                load_bot_settings(path)
 
     def test_requires_symbols_for_each_strategy(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -42,6 +42,7 @@
       "type": "bollinger",
       "enabled": true,
       "symbols": ["EURUSD", "GBPUSD"],
+      "symbol_class": "forex",
       "params": {
         "signal_mode": "adaptive",
         "timeframe": "M15",

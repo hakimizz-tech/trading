@@ -5,6 +5,74 @@ import pandas as pd
 from market_data.ohlcv import load_ohlcv_csv, process_ohlcv, quality_report, resample_ohlcv, to_ohlcv_frame
 
 
+class FakeAiomqlCandle:
+    def __init__(
+        self,
+        *,
+        time: int,
+        open: float,
+        high: float,
+        low: float,
+        close: float,
+        tick_volume: float,
+        real_volume: float,
+        spread: float,
+        Index: int,
+    ) -> None:
+        self.time = time
+        self.open = open
+        self.high = high
+        self.low = low
+        self.close = close
+        self.tick_volume = tick_volume
+        self.real_volume = real_volume
+        self.spread = spread
+        self.Index = Index
+
+    def dict(self) -> dict[str, float | int]:
+        return {
+            "time": self.time,
+            "open": self.open,
+            "high": self.high,
+            "low": self.low,
+            "close": self.close,
+            "tick_volume": self.tick_volume,
+            "real_volume": self.real_volume,
+            "spread": self.spread,
+            "Index": self.Index,
+        }
+
+
+class FakeAiomqlCandles:
+    def __init__(self) -> None:
+        self.data = pd.DataFrame(
+            [
+                {
+                    "time": 1767225600,
+                    "open": 1.0,
+                    "high": 1.1,
+                    "low": 0.9,
+                    "close": 1.05,
+                    "tick_volume": 12,
+                    "real_volume": 8,
+                    "spread": 2,
+                    "Index": 0,
+                },
+                {
+                    "time": 1767225660,
+                    "open": 1.05,
+                    "high": 1.2,
+                    "low": 1.0,
+                    "close": 1.1,
+                    "tick_volume": 10,
+                    "real_volume": 7,
+                    "spread": 3,
+                    "Index": 1,
+                },
+            ]
+        )
+
+
 class OhlcvProcessingTests(unittest.TestCase):
     def test_loads_mt5_style_csv_as_canonical_utc_ohlcv(self) -> None:
         data = load_ohlcv_csv("datasets/GBPUSD/GBPUSD_PERIOD_D1.csv")
@@ -54,6 +122,39 @@ class OhlcvProcessingTests(unittest.TestCase):
         self.assertEqual(str(data.index.tz), "UTC")
         self.assertIn("spread", data.columns)
         self.assertEqual(float(data["volume"].iloc[0]), 12.0)
+
+    def test_aiomql_candles_data_attribute_convert_to_ohlcv_frame(self) -> None:
+        data = to_ohlcv_frame(FakeAiomqlCandles(), symbol="EURUSD")
+
+        self.assertEqual(str(data.index.tz), "UTC")
+        self.assertIn("tick_volume", data.columns)
+        self.assertIn("real_volume", data.columns)
+        self.assertIn("spread", data.columns)
+        self.assertIn("index", data.columns)
+        self.assertEqual(float(data["volume"].iloc[0]), 12.0)
+        self.assertEqual(float(data["real_volume"].iloc[0]), 8.0)
+
+    def test_aiomql_candle_objects_convert_to_ohlcv_frame(self) -> None:
+        candles = [
+            FakeAiomqlCandle(
+                time=1767225600,
+                open=1.0,
+                high=1.1,
+                low=0.9,
+                close=1.05,
+                tick_volume=12,
+                real_volume=8,
+                spread=2,
+                Index=0,
+            )
+        ]
+
+        data = to_ohlcv_frame(candles, symbol="EURUSD")
+
+        self.assertEqual(str(data.index.tz), "UTC")
+        self.assertEqual(float(data["volume"].iloc[0]), 12.0)
+        self.assertEqual(float(data["spread"].iloc[0]), 2.0)
+        self.assertEqual(float(data["index"].iloc[0]), 0.0)
 
     def test_mt5_epoch_second_rates_convert_to_utc_index(self) -> None:
         rates = [

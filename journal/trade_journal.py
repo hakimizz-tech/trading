@@ -1,13 +1,16 @@
-"""SQLite trade journal for strategy signals, order attempts, and exits."""
+"""Database-neutral trade journal for strategy signals, order attempts, and exits."""
 
 from __future__ import annotations
 
 import json
-import sqlite3
+import hashlib
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
+
+from journal.backends import JournalBackend, SQLiteJournalBackend
 
 
 class TradeJournalError(RuntimeError):
@@ -54,6 +57,8 @@ class JournalTrade:
     risk_reward: float | None = None
     fees_sol: float | None = None
     slippage_bps: float | None = None
+    expected_profit: float | None = None
+    actual_profit: float | None = None
     status: str = "signal"
     mode: str = "dry_run"
     source: str = "strategy"
@@ -77,13 +82,16 @@ class JournalEvent:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
-class SQLiteTradeJournal:
-    """Persistent journal for all strategies using stdlib SQLite only."""
+class TradeJournal:
+    """Persistent journal for all strategies with a pluggable database backend."""
 
-    def __init__(self, path: str | Path = "trade_results/trade_journal.sqlite") -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_schema()
+    def __init__(
+        self,
+        path: str | Path = "trade_results/trade_journal.sqlite",
+        *,
+        backend: JournalBackend | None = None,
+    ) -> None:
+        self.backend = backend or SQLiteJournalBackend(path)
 
     def record_trade(self, trade: JournalTrade) -> str:
         """Insert or replace a trade record and return its trade id."""
@@ -91,24 +99,11 @@ class SQLiteTradeJournal:
         trade_id = trade.id or self.next_trade_id(trade.entry_date)
         now = utc_now()
         payload = _trade_payload(trade, trade_id=trade_id, now=now)
-        columns = list(payload)
-        placeholders = ", ".join("?" for _ in columns)
-        update_columns = [column for column in columns if column not in {"id", "created_at"}]
-        assignments = ", ".join(f"{column} = excluded.{column}" for column in update_columns)
-
-        with self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO trades ({", ".join(columns)})
-                VALUES ({placeholders})
-                ON CONFLICT(id) DO UPDATE SET {assignments}
-                """,
-                [payload[column] for column in columns],
-            )
+        self.backend.upsert_trade(payload)
         return trade_id
 
     def record_event(self, event: JournalEvent) -> int:
-        """Append a lifecycle event and return the SQLite row id."""
+        """Append a lifecycle event and return the backend row id."""
         if not event.event_type.strip():
             raise TradeJournalError("event_type is required")
         if event.status is not None and event.status not in TRADE_STATUSES:
@@ -126,26 +121,60 @@ class SQLiteTradeJournal:
             "message": event.message,
             "metadata_json": _json_dumps(event.metadata),
         }
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO trade_events (
-                    trade_id, event_time, event_type, token, strategy, direction,
-                    price, size_sol, status, message, metadata_json
-                )
-                VALUES (
-                    :trade_id, :event_time, :event_type, :token, :strategy, :direction,
-                    :price, :size_sol, :status, :message, :metadata_json
-                )
-                """,
-                payload,
-            )
-            if event.trade_id is not None and event.status is not None:
-                conn.execute(
-                    "UPDATE trades SET status = ?, updated_at = ? WHERE id = ?",
-                    (event.status, utc_now(), event.trade_id),
-                )
-            return int(cursor.lastrowid)
+        row_id = self.backend.insert_event(payload)
+        if event.trade_id is not None and event.status is not None:
+            self.backend.update_trade_status(event.trade_id, status=event.status, updated_at=utc_now())
+        return row_id
+
+    def record_broker_history_event(
+        self,
+        item: Mapping[str, Any],
+        *,
+        item_type: str,
+        strategy: str,
+        trade_id: str | None = None,
+        status: str | None = None,
+    ) -> int:
+        """Record a normalized event from aiomql History deals or orders.
+
+        aiomql History exposes completed `deals` and `orders`. Their exact
+        shape can vary by aiomql/MT5 version, so this method accepts a mapping
+        produced by `model_dump()`, `_asdict()`, or the export script. Broker
+        ticket/deal/position identifiers are stored in metadata for later
+        reconciliation with the ledger and broker exports.
+        """
+        if item_type not in {"deal", "order"}:
+            raise TradeJournalError("item_type must be 'deal' or 'order'")
+        event_status = status or ("closed" if item_type == "deal" and _history_item_is_close(item) else "filled")
+        if event_status not in TRADE_STATUSES:
+            raise TradeJournalError(f"status must be one of: {', '.join(TRADE_STATUSES)}")
+        event = JournalEvent(
+            trade_id=trade_id,
+            event_time=_history_event_time(item),
+            event_type=f"broker_history_{item_type}",
+            token=_history_symbol(item),
+            strategy=strategy,
+            direction=_history_direction(item),
+            price=_float_or_none(_first_present(item, ("price", "price_open", "price_current"))),
+            size_sol=_float_or_none(_first_present(item, ("volume", "volume_initial", "volume_current"))),
+            status=event_status,
+            message=f"Imported aiomql history {item_type}",
+            metadata={
+                "broker_external_id": _history_external_id(item),
+                "broker_history_type": item_type,
+                "broker_ticket": _string_or_none(_first_present(item, ("ticket", "order"))),
+                "broker_deal": _string_or_none(_first_present(item, ("deal",))),
+                "broker_order": _string_or_none(_first_present(item, ("order",))),
+                "broker_position_id": _string_or_none(_first_present(item, ("position_id", "position"))),
+                "profit": _float_or_none(_first_present(item, ("profit",))),
+                "commission": _float_or_none(_first_present(item, ("commission",))),
+                "swap": _float_or_none(_first_present(item, ("swap",))),
+                "magic": _first_present(item, ("magic",)),
+                "comment": _string_or_none(_first_present(item, ("comment",))),
+                "raw": dict(item),
+            },
+        )
+        return self.record_event(event)
 
     def update_exit(
         self,
@@ -157,6 +186,7 @@ class SQLiteTradeJournal:
         pnl_pct: float,
         outcome: str,
         lessons: str | None = None,
+        actual_profit: float | None = None,
         status: str = "closed",
     ) -> None:
         """Update a trade with realized exit information."""
@@ -166,17 +196,21 @@ class SQLiteTradeJournal:
         if existing is None:
             raise TradeJournalError(f"Unknown trade id: {trade_id}")
         hold_minutes = _hold_minutes(existing["entry_date"], exit_date)
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE trades
-                SET exit_date = ?, exit_price = ?, pnl_sol = ?, pnl_pct = ?,
-                    outcome = ?, hold_time_minutes = ?, lessons = COALESCE(?, lessons),
-                    status = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (exit_date, exit_price, pnl_sol, pnl_pct, outcome, hold_minutes, lessons, status, utc_now(), trade_id),
-            )
+        self.backend.update_trade_exit(
+            trade_id,
+            {
+                "exit_date": exit_date,
+                "exit_price": exit_price,
+                "pnl_sol": pnl_sol,
+                "pnl_pct": pnl_pct,
+                "actual_profit": pnl_sol if actual_profit is None else actual_profit,
+                "outcome": outcome,
+                "hold_time_minutes": hold_minutes,
+                "lessons": lessons,
+                "status": status,
+                "updated_at": utc_now(),
+            },
+        )
         self.record_event(
             JournalEvent(
                 trade_id=trade_id,
@@ -206,6 +240,7 @@ class SQLiteTradeJournal:
         stop_price: float | None = None,
         target_price: float | None = None,
         risk_reward: float | None = None,
+        expected_profit: float | None = None,
         metadata: dict[str, Any] | None = None,
         entry_date: str | None = None,
     ) -> str:
@@ -222,12 +257,16 @@ class SQLiteTradeJournal:
             stop_price=stop_price,
             target_price=target_price,
             risk_reward=risk_reward,
+            expected_profit=expected_profit,
             status=status,
             mode=mode,
             source=source,
             metadata=metadata or {},
         )
         trade_id = self.record_trade(trade)
+        event_metadata = dict(metadata or {})
+        if expected_profit is not None:
+            event_metadata["expected_profit"] = expected_profit
         self.record_event(
             JournalEvent(
                 trade_id=trade_id,
@@ -240,136 +279,35 @@ class SQLiteTradeJournal:
                 size_sol=size_sol,
                 status=status,
                 message=rationale,
-                metadata=metadata or {},
+                metadata=event_metadata,
             )
         )
         return trade_id
 
     def get_trade(self, trade_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+        row = self.backend.get_trade(trade_id)
         return _row_to_dict(row) if row is not None else None
 
     def list_trades(self, *, status: str | None = None, strategy: str | None = None) -> list[dict[str, Any]]:
-        clauses: list[str] = []
-        params: list[Any] = []
-        if status is not None:
-            clauses.append("status = ?")
-            params.append(status)
-        if strategy is not None:
-            clauses.append("strategy = ?")
-            params.append(strategy)
-        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-        with self._connect() as conn:
-            rows = conn.execute(f"SELECT * FROM trades {where} ORDER BY entry_date, id", params).fetchall()
+        rows = self.backend.list_trades(status=status, strategy=strategy)
         return [_row_to_dict(row) for row in rows]
 
     def list_events(self, trade_id: str | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM trade_events"
-        params: tuple[Any, ...] = ()
-        if trade_id is not None:
-            query += " WHERE trade_id = ?"
-            params = (trade_id,)
-        query += " ORDER BY event_time, id"
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
+        rows = self.backend.list_events(trade_id)
         return [_row_to_dict(row) for row in rows]
 
     def summary_by_strategy(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    strategy,
-                    COUNT(*) AS trade_count,
-                    SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) AS wins,
-                    SUM(CASE WHEN outcome = 'loss' THEN 1 ELSE 0 END) AS losses,
-                    SUM(COALESCE(pnl_sol, 0)) AS pnl_sol
-                FROM trades
-                GROUP BY strategy
-                ORDER BY strategy
-                """
-            ).fetchall()
+        rows = self.backend.summary_by_strategy()
         return [_row_to_dict(row) for row in rows]
 
     def next_trade_id(self, timestamp: str | None = None) -> str:
-        date_part = _parse_datetime(timestamp or utc_now()).strftime("%Y%m%d")
-        prefix = f"T-{date_part}-"
-        with self._connect() as conn:
-            row = conn.execute("SELECT id FROM trades WHERE id LIKE ? ORDER BY id DESC LIMIT 1", (f"{prefix}%",)).fetchone()
-        next_number = 1
-        if row is not None:
-            try:
-                next_number = int(str(row["id"]).rsplit("-", 1)[1]) + 1
-            except (IndexError, ValueError):
-                next_number = 1
-        return f"{prefix}{next_number:03d}"
+        """Return a UUID trade id.
 
-    def _ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS trades (
-                    id TEXT PRIMARY KEY,
-                    token TEXT NOT NULL,
-                    direction TEXT NOT NULL,
-                    entry_date TEXT NOT NULL,
-                    entry_price REAL NOT NULL,
-                    size_sol REAL NOT NULL,
-                    size_usd REAL,
-                    strategy TEXT NOT NULL,
-                    setup_quality INTEGER,
-                    rationale TEXT NOT NULL,
-                    exit_date TEXT,
-                    exit_price REAL,
-                    pnl_sol REAL,
-                    pnl_pct REAL,
-                    outcome TEXT,
-                    hold_time_minutes INTEGER,
-                    emotional_state TEXT,
-                    lessons TEXT,
-                    tags_json TEXT NOT NULL DEFAULT '[]',
-                    stop_price REAL,
-                    target_price REAL,
-                    risk_reward REAL,
-                    fees_sol REAL,
-                    slippage_bps REAL,
-                    status TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS trade_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    trade_id TEXT,
-                    event_time TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    token TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    direction TEXT,
-                    price REAL,
-                    size_sol REAL,
-                    status TEXT,
-                    message TEXT,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    FOREIGN KEY(trade_id) REFERENCES trades(id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy);
-                CREATE INDEX IF NOT EXISTS idx_trades_token ON trades(token);
-                CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
-                CREATE INDEX IF NOT EXISTS idx_trade_events_trade_id ON trade_events(trade_id);
-                """
-            )
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+        ``timestamp`` is accepted for backward-compatible call sites, but ids
+        are intentionally not date-sequential. Use ``entry_date`` for temporal
+        queries and the UUID for stable identity.
+        """
+        return str(uuid.uuid4())
 
     @staticmethod
     def _validate_trade(trade: JournalTrade) -> None:
@@ -411,13 +349,90 @@ def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_dict(row: Mapping[str, Any]) -> dict[str, Any]:
     result = dict(row)
     if "tags_json" in result:
         result["tags"] = json.loads(result.pop("tags_json") or "[]")
     if "metadata_json" in result:
         result["metadata"] = json.loads(result.pop("metadata_json") or "{}")
     return result
+
+
+def _first_present(item: Mapping[str, Any], keys: tuple[str, ...]) -> Any:
+    for key in keys:
+        value = item.get(key)
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _history_external_id(item: Mapping[str, Any]) -> str:
+    value = _first_present(item, ("deal", "ticket", "order", "position_id", "position"))
+    if value is not None:
+        return str(value)
+    digest = hashlib.sha256(_json_dumps(dict(item)).encode("utf-8")).hexdigest()[:16]
+    return f"history:{digest}"
+
+
+def _history_symbol(item: Mapping[str, Any]) -> str:
+    value = _first_present(item, ("symbol", "instrument", "token"))
+    return str(value) if value is not None else "UNKNOWN"
+
+
+def _history_direction(item: Mapping[str, Any]) -> str | None:
+    raw = _first_present(item, ("direction", "side", "type"))
+    if raw is None:
+        return None
+    text = str(raw).lower()
+    if "buy" in text or text in {"0", "long"}:
+        return "long"
+    if "sell" in text or text in {"1", "short"}:
+        return "short"
+    return None
+
+
+def _history_item_is_close(item: Mapping[str, Any]) -> bool:
+    entry = _first_present(item, ("entry", "entry_type"))
+    if entry is None:
+        return _float_or_none(_first_present(item, ("profit",))) is not None
+    text = str(entry).lower()
+    return "out" in text or text in {"1", "out", "close", "closed"}
+
+
+def _history_event_time(item: Mapping[str, Any]) -> str:
+    value = _first_present(item, ("time", "time_msc", "time_done", "time_setup", "timestamp", "created_at"))
+    if value is None:
+        return utc_now()
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, (int, float)):
+        timestamp = float(value)
+        if timestamp > 10_000_000_000:
+            timestamp = timestamp / 1000.0
+        parsed = datetime.fromtimestamp(timestamp, tz=UTC)
+    else:
+        try:
+            parsed = _parse_datetime(str(value))
+        except ValueError:
+            return utc_now()
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _parse_datetime(value: str) -> datetime:

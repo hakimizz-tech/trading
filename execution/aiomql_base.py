@@ -13,7 +13,7 @@ import pandas as pd
 from accounting import SQLiteLedger
 from execution.gates import evaluate_live_execution_gate
 from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, OpenPosition, SymbolContract
-from journal import JournalEvent, SQLiteTradeJournal, utc_now
+from journal import JournalEvent, TradeJournal, utc_now
 from market_data.ohlcv import to_ohlcv_frame as normalize_ohlcv_frame
 
 try:
@@ -88,7 +88,7 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
         self.tracker = Tracker(snooze=self._interval_seconds())  # type: ignore[operator]
         self.trader = trader or ScalpTrader(symbol=self.symbol)  # type: ignore[operator]
         self.trade_parameters: dict[str, Any] = self._parameter_snapshot()
-        self.journal = SQLiteTradeJournal(str(self.journal_db_path)) if bool(self.journal_enabled) else None
+        self.journal = TradeJournal(str(self.journal_db_path)) if bool(self.journal_enabled) else None
         self.ledger = SQLiteLedger(str(self.accounting_db_path)) if bool(self.accounting_enabled) else None
         self.snapshot_provider = snapshot_provider
 
@@ -303,6 +303,7 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
                 stop_price=optional_float(self.trade_parameters.get("stop_loss_price")),
                 target_price=optional_float(self.trade_parameters.get("take_profit_price")),
                 risk_reward=optional_float(self.trade_parameters.get("take_profit_rr")),
+                expected_profit=optional_float(self.trade_parameters.get("expected_profit")),
                 metadata=self._journal_metadata(),
             )
             return trade_id
@@ -378,6 +379,7 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
             "account_equity",
             "account_free_margin",
             "gate_rejection_reason",
+            "expected_profit",
         )
         metadata = {key: self.trade_parameters.get(key) for key in keys if key in self.trade_parameters}
         metadata["timeframe"] = str(self.timeframe)
