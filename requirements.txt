@@ -1,3 +1,19 @@
 pandas>=2.0
 numpy>=1.24
 SQLAlchemy>=2.0
+
+# Market data
+yfinance>=0.2
+
+# Backtesting and model research
+vectorbt
+xgboost
+
+# Visualization
+matplotlib
+
+# Live aiomql execution
+# aiomql depends on MetaTrader5, which is only usable in the Windows/MT5
+# runtime environment. On Linux this requirement is intentionally skipped so
+# research and tests can still install cleanly.
+aiomql; platform_system == "Windows" and python_version >= "3.13"

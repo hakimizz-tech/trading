@@ -198,6 +198,6 @@ def _require_pyplot() -> Any:
     except ImportError as exc:  # pragma: no cover
         raise RuntimeError(
             "matplotlib is required for chart rendering. Install visualization dependencies "
-            "with `python -m pip install -r requirements-visualization.txt`."
+            "with `python -m pip install -r requirements.txt`."
         ) from exc
     return plt

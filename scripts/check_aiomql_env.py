@@ -55,7 +55,6 @@ def check_project(project: Path) -> int:
 
     expected = [
         "requirements.txt",
-        "requirements-aiomql.txt",
         "aiomql.json",
         "aiomql.json.example",
         ".gitignore",

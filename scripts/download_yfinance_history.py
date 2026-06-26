@@ -184,7 +184,7 @@ def _import_yfinance():
     except ImportError as exc:  # pragma: no cover - depends on optional market-data extras.
         raise RuntimeError(
             "yfinance is not installed. Install market-data dependencies with "
-            "`python -m pip install -r requirements-market-data.txt`."
+            "`python -m pip install -r requirements.txt`."
         ) from exc
     return yf
 

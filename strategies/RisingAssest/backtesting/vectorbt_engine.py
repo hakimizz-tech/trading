@@ -106,5 +106,5 @@ def _require_vectorbt() -> Any:
     except ImportError as exc:
         raise RuntimeError(
             "vectorbt is not installed. Install the research backtesting extras with "
-            "`python -m pip install -r requirements-backtest.txt`."
+            "`python -m pip install -r requirements.txt`."
         ) from exc

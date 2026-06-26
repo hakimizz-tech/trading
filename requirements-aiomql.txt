@@ -1,6 +1,0 @@
--r requirements.txt
-
-# aiomql depends on MetaTrader5, which is only usable in the Windows/MT5
-# runtime environment. On Linux this requirement is intentionally skipped so
-# research and tests can still install cleanly.
-aiomql; platform_system == "Windows" and python_version >= "3.13"
