@@ -87,9 +87,9 @@
         "stop_loss_pips": 30.0,
         "take_profit_pips": 60.0,
         "journal_enabled": true,
-        "journal_db_path": "trade_results/trade_journal.sqlite",
+        "journal_db_path": "db/trade_journal.sqlite",
         "accounting_enabled": true,
-        "accounting_db_path": "trade_results/trade_accounting.sqlite"
+        "accounting_db_path": "db/trade_accounting.sqlite"
       }
     }
   ]

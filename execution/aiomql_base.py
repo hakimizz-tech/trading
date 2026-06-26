@@ -76,9 +76,9 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
         "stop_loss_pips": 30.0,
         "take_profit_rr": 2.0,
         "journal_enabled": True,
-        "journal_db_path": "trade_results/trade_journal.sqlite",
+        "journal_db_path": "db/trade_journal.sqlite",
         "accounting_enabled": True,
-        "accounting_db_path": "trade_results/trade_accounting.sqlite",
+        "accounting_db_path": "db/trade_accounting.sqlite",
     }
 
     def __init__(

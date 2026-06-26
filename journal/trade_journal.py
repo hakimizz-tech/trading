@@ -87,7 +87,7 @@ class TradeJournal:
 
     def __init__(
         self,
-        path: str | Path = "trade_results/trade_journal.sqlite",
+        path: str | Path = "db/trade_journal.sqlite",
         *,
         backend: JournalBackend | None = None,
     ) -> None:

@@ -10,7 +10,7 @@ from typing import Any
 class SQLiteJournalBackend:
     """Stdlib SQLite storage adapter for local research and dry-run trading."""
 
-    def __init__(self, path: str | Path = "trade_results/trade_journal.sqlite") -> None:
+    def __init__(self, path: str | Path = "db/trade_journal.sqlite") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._ensure_schema()

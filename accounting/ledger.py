@@ -70,7 +70,7 @@ DEFAULT_ACCOUNTS: tuple[Account, ...] = (
 class SQLiteLedger:
     """Double-entry ledger with reports and strategy-friendly helpers."""
 
-    def __init__(self, path: str | Path = "trade_results/trade_accounting.sqlite", *, base_currency: str = "BASE") -> None:
+    def __init__(self, path: str | Path = "db/trade_accounting.sqlite", *, base_currency: str = "BASE") -> None:
         self.path = Path(path)
         self.base_currency = base_currency
         self.path.parent.mkdir(parents=True, exist_ok=True)

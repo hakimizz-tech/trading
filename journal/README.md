@@ -96,7 +96,7 @@ Do not import SQLite classes from strategy or execution code. Only wire a backen
 ```python
 from journal import TradeJournal
 
-journal = TradeJournal("trade_results/trade_journal.sqlite")
+journal = TradeJournal("db/trade_journal.sqlite")
 
 trade_id = journal.record_signal_trade(
     token="EURUSD",

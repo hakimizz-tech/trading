@@ -89,8 +89,8 @@ def _metadata(row: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reconcile trade journal, ledger, and optional broker deal export.")
-    parser.add_argument("--journal-db", type=Path, default=Path("trade_results/trade_journal.sqlite"))
-    parser.add_argument("--ledger-db", type=Path, default=Path("trade_results/trade_accounting.sqlite"))
+    parser.add_argument("--journal-db", type=Path, default=Path("db/trade_journal.sqlite"))
+    parser.add_argument("--ledger-db", type=Path, default=Path("db/trade_accounting.sqlite"))
     parser.add_argument("--broker-deals-csv", type=Path, default=None)
     return parser.parse_args()
 
