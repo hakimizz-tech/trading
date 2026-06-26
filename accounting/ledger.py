@@ -1,4 +1,4 @@
-"""SQLite double-entry ledger for trading operations.
+"""SQLAlchemy double-entry ledger for trading operations.
 
 The ledger records only confirmed economic activity: fills, exits, fees,
 funding, withdrawals, and income. Strategy signals and order attempts belong in
@@ -8,11 +8,15 @@ the trade journal until the broker/exchange confirms a fill.
 from __future__ import annotations
 
 import json
-import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text, create_engine, func, select
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 
 class AccountingError(RuntimeError):
@@ -46,6 +50,49 @@ class LedgerTransaction:
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
+class AccountingBase(DeclarativeBase):
+    pass
+
+
+class AccountModel(AccountingBase):
+    __tablename__ = "accounts"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(32), nullable=False)
+    normal_balance: Mapped[str] = mapped_column(String(16), nullable=False)
+
+
+class LedgerTransactionModel(AccountingBase):
+    __tablename__ = "ledger_transactions"
+    __table_args__ = (
+        Index("idx_ledger_transactions_external_id", "external_id"),
+        Index("idx_ledger_transactions_strategy", "strategy"),
+        Index("idx_ledger_transactions_symbol", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    occurred_at: Mapped[str] = mapped_column(String(40), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False)
+    external_id: Mapped[str | None] = mapped_column(String(128))
+    strategy: Mapped[str | None] = mapped_column(String(128))
+    symbol: Mapped[str | None] = mapped_column(String(64))
+    metadata_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[str] = mapped_column(String(40), nullable=False)
+
+
+class LedgerPostingModel(AccountingBase):
+    __tablename__ = "ledger_postings"
+    __table_args__ = (Index("idx_ledger_postings_account", "account_code"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    transaction_id: Mapped[int] = mapped_column(Integer, ForeignKey("ledger_transactions.id"), nullable=False)
+    account_code: Mapped[str] = mapped_column(String(32), ForeignKey("accounts.code"), nullable=False)
+    debit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    credit: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    memo: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+
 DEFAULT_ACCOUNTS: tuple[Account, ...] = (
     Account("1010", "Cash - Base", "asset", "debit"),
     Account("1020", "Cash - Quote", "asset", "debit"),
@@ -67,80 +114,67 @@ DEFAULT_ACCOUNTS: tuple[Account, ...] = (
 )
 
 
-class SQLiteLedger:
+class TradeLedger:
     """Double-entry ledger with reports and strategy-friendly helpers."""
 
-    def __init__(self, path: str | Path = "db/trade_accounting.sqlite", *, base_currency: str = "BASE") -> None:
-        self.path = Path(path)
+    def __init__(self, path: str | Path = "db/trade_accounting.sqlite", *, base_currency: str = "BASE", echo: bool = False) -> None:
+        self.database_url = _database_url(path)
         self.base_currency = base_currency
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._ensure_schema()
+        self.engine = create_engine(self.database_url, echo=echo, future=True)
+        self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
+        AccountingBase.metadata.create_all(self.engine)
         self.ensure_default_accounts()
 
     def ensure_default_accounts(self) -> None:
-        with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO accounts (code, name, category, normal_balance)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(code) DO UPDATE SET
-                    name = excluded.name,
-                    category = excluded.category,
-                    normal_balance = excluded.normal_balance
-                """,
-                [(account.code, account.name, account.category, account.normal_balance) for account in DEFAULT_ACCOUNTS],
-            )
+        with self._session() as session:
+            for account in DEFAULT_ACCOUNTS:
+                record = session.get(AccountModel, account.code)
+                if record is None:
+                    session.add(AccountModel(**account.__dict__))
+                else:
+                    record.name = account.name
+                    record.category = account.category
+                    record.normal_balance = account.normal_balance
 
     def add_account(self, account: Account) -> None:
         if account.category not in {"asset", "liability", "income", "expense", "equity"}:
             raise AccountingError("Unsupported account category")
         if account.normal_balance not in {"debit", "credit"}:
             raise AccountingError("normal_balance must be debit or credit")
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO accounts (code, name, category, normal_balance)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(code) DO UPDATE SET
-                    name = excluded.name,
-                    category = excluded.category,
-                    normal_balance = excluded.normal_balance
-                """,
-                (account.code, account.name, account.category, account.normal_balance),
-            )
+        with self._session() as session:
+            record = session.get(AccountModel, account.code)
+            if record is None:
+                session.add(AccountModel(**account.__dict__))
+            else:
+                record.name = account.name
+                record.category = account.category
+                record.normal_balance = account.normal_balance
 
     def record_transaction(self, transaction: LedgerTransaction) -> int:
         self._validate_transaction(transaction)
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO ledger_transactions (
-                    occurred_at, description, external_id, strategy, symbol, metadata_json, created_at
+        with self._session() as session:
+            record = LedgerTransactionModel(
+                occurred_at=transaction.occurred_at,
+                description=transaction.description,
+                external_id=transaction.external_id,
+                strategy=transaction.strategy,
+                symbol=transaction.symbol,
+                metadata_json=_json_dumps(transaction.metadata),
+                created_at=utc_now(),
+            )
+            session.add(record)
+            session.flush()
+            for posting in transaction.postings:
+                session.add(
+                    LedgerPostingModel(
+                        transaction_id=int(record.id),
+                        account_code=posting.account_code,
+                        debit=posting.debit,
+                        credit=posting.credit,
+                        memo=posting.memo,
+                    )
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    transaction.occurred_at,
-                    transaction.description,
-                    transaction.external_id,
-                    transaction.strategy,
-                    transaction.symbol,
-                    _json_dumps(transaction.metadata),
-                    utc_now(),
-                ),
-            )
-            transaction_id = int(cursor.lastrowid)
-            conn.executemany(
-                """
-                INSERT INTO ledger_postings (transaction_id, account_code, debit, credit, memo)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                [
-                    (transaction_id, posting.account_code, posting.debit, posting.credit, posting.memo)
-                    for posting in transaction.postings
-                ],
-            )
-            return transaction_id
+            return int(record.id)
 
     def record_funding(
         self,
@@ -193,7 +227,6 @@ class SQLiteLedger:
         external_id: str | None = None,
         memo: str | None = None,
     ) -> int:
-        """Record a confirmed long/opening buy in base-currency value."""
         description = memo or f"Buy/open {symbol}"
         postings = [
             LedgerPosting("1100", debit=cost_basis, memo=f"{symbol} cost basis"),
@@ -225,7 +258,6 @@ class SQLiteLedger:
         external_id: str | None = None,
         memo: str | None = None,
     ) -> int:
-        """Record a confirmed close/sell and realized gain or loss."""
         description = memo or f"Sell/close {symbol}"
         realized = proceeds - cost_basis
         postings = [
@@ -251,10 +283,15 @@ class SQLiteLedger:
         )
 
     def transaction_by_external_id(self, external_id: str) -> dict[str, Any] | None:
-        """Return an existing ledger transaction for a broker/exchange id."""
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM ledger_transactions WHERE external_id = ? ORDER BY id LIMIT 1", (external_id,)).fetchone()
-        return _decode_row(row) if row is not None else None
+        statement = (
+            select(LedgerTransactionModel)
+            .where(LedgerTransactionModel.external_id == external_id)
+            .order_by(LedgerTransactionModel.id)
+            .limit(1)
+        )
+        with self._session() as session:
+            record = session.execute(statement).scalar_one_or_none()
+            return _transaction_to_dict(record) if record is not None else None
 
     def record_position_close(
         self,
@@ -273,12 +310,7 @@ class SQLiteLedger:
         memo: str | None = None,
         idempotent: bool = True,
     ) -> int | None:
-        """Record a confirmed MT5/CFD position close.
-
-        Open fills without realized P&L should stay in the journal until there
-        is confirmed economic activity. This method posts realized P&L and
-        broker costs only, with margin/exposure details stored as metadata.
-        """
+        """Record a confirmed MT5/CFD position close."""
         if external_id and idempotent:
             existing = self.transaction_by_external_id(external_id)
             if existing is not None:
@@ -352,7 +384,7 @@ class SQLiteLedger:
         )
 
     def record_broker_fill(self, **kwargs: Any) -> int | None:
-        """Alias for MT5/CFD confirmed close posting."""
+        """Record a broker-confirmed close/fill that has realized P&L."""
         return self.record_position_close(**kwargs)
 
     def record_fee(
@@ -414,36 +446,39 @@ class SQLiteLedger:
         )
 
     def trial_balance(self) -> dict[str, float]:
-        with self._connect() as conn:
-            row = conn.execute("SELECT COALESCE(SUM(debit), 0) AS debits, COALESCE(SUM(credit), 0) AS credits FROM ledger_postings").fetchone()
-        debits = float(row["debits"])
-        credits = float(row["credits"])
+        statement = select(
+            func.coalesce(func.sum(LedgerPostingModel.debit), 0).label("debits"),
+            func.coalesce(func.sum(LedgerPostingModel.credit), 0).label("credits"),
+        )
+        with self._session() as session:
+            row = session.execute(statement).one()
+        debits = float(row.debits)
+        credits = float(row.credits)
         return {"debits": debits, "credits": credits, "difference": round(debits - credits, 10)}
 
     def account_balances(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT
-                    a.code,
-                    a.name,
-                    a.category,
-                    a.normal_balance,
-                    COALESCE(SUM(p.debit), 0) AS debits,
-                    COALESCE(SUM(p.credit), 0) AS credits
-                FROM accounts a
-                LEFT JOIN ledger_postings p ON p.account_code = a.code
-                GROUP BY a.code, a.name, a.category, a.normal_balance
-                ORDER BY a.code
-                """
-            ).fetchall()
+        statement = (
+            select(
+                AccountModel.code,
+                AccountModel.name,
+                AccountModel.category,
+                AccountModel.normal_balance,
+                func.coalesce(func.sum(LedgerPostingModel.debit), 0).label("debits"),
+                func.coalesce(func.sum(LedgerPostingModel.credit), 0).label("credits"),
+            )
+            .outerjoin(LedgerPostingModel, LedgerPostingModel.account_code == AccountModel.code)
+            .group_by(AccountModel.code, AccountModel.name, AccountModel.category, AccountModel.normal_balance)
+            .order_by(AccountModel.code)
+        )
         balances: list[dict[str, Any]] = []
-        for row in rows:
-            debits = float(row["debits"])
-            credits = float(row["credits"])
-            normal = str(row["normal_balance"])
-            balance = debits - credits if normal == "debit" else credits - debits
-            balances.append({**dict(row), "balance": balance})
+        with self._session() as session:
+            rows = session.execute(statement)
+            for row in rows:
+                debits = float(row.debits)
+                credits = float(row.credits)
+                normal = str(row.normal_balance)
+                balance = debits - credits if normal == "debit" else credits - debits
+                balances.append({**dict(row._mapping), "balance": balance})
         return balances
 
     def profit_and_loss(self) -> dict[str, Any]:
@@ -467,41 +502,39 @@ class SQLiteLedger:
         strategy: str | None = None,
         symbol: str | None = None,
     ) -> float:
-        """Return income minus expenses since an ISO timestamp."""
-        clauses = ["t.occurred_at >= ?", "a.category IN ('income', 'expense')"]
-        params: list[Any] = [start]
+        conditions = [
+            LedgerTransactionModel.occurred_at >= start,
+            AccountModel.category.in_(("income", "expense")),
+        ]
         if strategy is not None:
-            clauses.append("t.strategy = ?")
-            params.append(strategy)
+            conditions.append(LedgerTransactionModel.strategy == strategy)
         if symbol is not None:
-            clauses.append("t.symbol = ?")
-            params.append(symbol)
-        query = f"""
-            SELECT
-                a.category,
-                a.normal_balance,
-                COALESCE(SUM(p.debit), 0) AS debits,
-                COALESCE(SUM(p.credit), 0) AS credits
-            FROM ledger_postings p
-            JOIN ledger_transactions t ON t.id = p.transaction_id
-            JOIN accounts a ON a.code = p.account_code
-            WHERE {' AND '.join(clauses)}
-            GROUP BY a.category, a.normal_balance
-        """
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-
+            conditions.append(LedgerTransactionModel.symbol == symbol)
+        statement = (
+            select(
+                AccountModel.category,
+                AccountModel.normal_balance,
+                func.coalesce(func.sum(LedgerPostingModel.debit), 0).label("debits"),
+                func.coalesce(func.sum(LedgerPostingModel.credit), 0).label("credits"),
+            )
+            .join(LedgerTransactionModel, LedgerTransactionModel.id == LedgerPostingModel.transaction_id)
+            .join(AccountModel, AccountModel.code == LedgerPostingModel.account_code)
+            .where(*conditions)
+            .group_by(AccountModel.category, AccountModel.normal_balance)
+        )
         income = 0.0
         expenses = 0.0
-        for row in rows:
-            debits = float(row["debits"])
-            credits = float(row["credits"])
-            normal = str(row["normal_balance"])
-            balance = debits - credits if normal == "debit" else credits - debits
-            if row["category"] == "income":
-                income += balance
-            elif row["category"] == "expense":
-                expenses += balance
+        with self._session() as session:
+            rows = session.execute(statement)
+            for row in rows:
+                debits = float(row.debits)
+                credits = float(row.credits)
+                normal = str(row.normal_balance)
+                balance = debits - credits if normal == "debit" else credits - debits
+                if row.category == "income":
+                    income += balance
+                elif row.category == "expense":
+                    expenses += balance
         return income - expenses
 
     def balance_sheet(self) -> dict[str, Any]:
@@ -525,20 +558,17 @@ class SQLiteLedger:
         }
 
     def list_transactions(self) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM ledger_transactions ORDER BY occurred_at, id").fetchall()
-        return [_decode_row(row) for row in rows]
+        statement = select(LedgerTransactionModel).order_by(LedgerTransactionModel.occurred_at, LedgerTransactionModel.id)
+        with self._session() as session:
+            return [_transaction_to_dict(record) for record in session.execute(statement).scalars()]
 
     def list_postings(self, transaction_id: int | None = None) -> list[dict[str, Any]]:
-        query = "SELECT * FROM ledger_postings"
-        params: tuple[Any, ...] = ()
+        statement = select(LedgerPostingModel)
         if transaction_id is not None:
-            query += " WHERE transaction_id = ?"
-            params = (transaction_id,)
-        query += " ORDER BY transaction_id, id"
-        with self._connect() as conn:
-            rows = conn.execute(query, params).fetchall()
-        return [dict(row) for row in rows]
+            statement = statement.where(LedgerPostingModel.transaction_id == transaction_id)
+        statement = statement.order_by(LedgerPostingModel.transaction_id, LedgerPostingModel.id)
+        with self._session() as session:
+            return [_posting_to_dict(record) for record in session.execute(statement).scalars()]
 
     def _validate_transaction(self, transaction: LedgerTransaction) -> None:
         if len(transaction.postings) < 2:
@@ -559,67 +589,59 @@ class SQLiteLedger:
                 raise AccountingError("A posting cannot have both debit and credit")
 
     def _account_codes(self) -> set[str]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT code FROM accounts").fetchall()
-        return {str(row["code"]) for row in rows}
+        statement = select(AccountModel.code)
+        with self._session() as session:
+            return {str(code) for code in session.execute(statement).scalars()}
 
-    def _ensure_schema(self) -> None:
-        with self._connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS accounts (
-                    code TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    normal_balance TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS ledger_transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    occurred_at TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    external_id TEXT,
-                    strategy TEXT,
-                    symbol TEXT,
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS ledger_postings (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    transaction_id INTEGER NOT NULL,
-                    account_code TEXT NOT NULL,
-                    debit REAL NOT NULL DEFAULT 0,
-                    credit REAL NOT NULL DEFAULT 0,
-                    memo TEXT NOT NULL DEFAULT '',
-                    FOREIGN KEY(transaction_id) REFERENCES ledger_transactions(id),
-                    FOREIGN KEY(account_code) REFERENCES accounts(code)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_ledger_transactions_external_id ON ledger_transactions(external_id);
-                CREATE INDEX IF NOT EXISTS idx_ledger_transactions_strategy ON ledger_transactions(strategy);
-                CREATE INDEX IF NOT EXISTS idx_ledger_transactions_symbol ON ledger_transactions(symbol);
-                CREATE INDEX IF NOT EXISTS idx_ledger_postings_account ON ledger_postings(account_code);
-                """
-            )
-
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
-        return conn
+    @contextmanager
+    def _session(self) -> Iterator[Session]:
+        session = self.session_factory()
+        try:
+            yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
 
 def utc_now() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _database_url(path_or_url: str | Path) -> str:
+    value = str(path_or_url)
+    if "://" in value:
+        return value
+    path = Path(value)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{path}"
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _decode_row(row: sqlite3.Row) -> dict[str, Any]:
-    result = dict(row)
-    if "metadata_json" in result:
-        result["metadata"] = json.loads(result.pop("metadata_json") or "{}")
-    return result
+def _transaction_to_dict(record: LedgerTransactionModel) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "occurred_at": record.occurred_at,
+        "description": record.description,
+        "external_id": record.external_id,
+        "strategy": record.strategy,
+        "symbol": record.symbol,
+        "metadata": json.loads(record.metadata_json or "{}"),
+        "created_at": record.created_at,
+    }
+
+
+def _posting_to_dict(record: LedgerPostingModel) -> dict[str, Any]:
+    return {
+        "id": record.id,
+        "transaction_id": record.transaction_id,
+        "account_code": record.account_code,
+        "debit": record.debit,
+        "credit": record.credit,
+        "memo": record.memo,
+    }

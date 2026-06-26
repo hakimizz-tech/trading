@@ -1,6 +1,6 @@
 """Trade journal shared by all strategies."""
 
-from journal.backends import JournalBackend, SQLiteJournalBackend
+from journal.backends import JournalBackend, SQLAlchemyJournalBackend
 from journal.trade_journal import (
     JournalEvent,
     TRADE_STATUSES,
@@ -13,7 +13,7 @@ from journal.trade_journal import (
 __all__ = [
     "JournalEvent",
     "JournalBackend",
-    "SQLiteJournalBackend",
+    "SQLAlchemyJournalBackend",
     "TRADE_STATUSES",
     "TradeRecord",
     "TradeJournal",

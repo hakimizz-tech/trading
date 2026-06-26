@@ -308,6 +308,30 @@ size = calculate_risk_position_size(
 
 These helpers accept dict-like or object-like broker payloads. Store original broker payloads in the returned object's `raw` field when useful.
 
+### aiomql `RAM`
+
+aiomql includes a `RAM` risk-assessment class for account-equity risk, risk-to-reward settings, pips, target volume, and helper checks such as losing-position limits. Use it inside aiomql-specific strategy or adapter code when you are working directly with aiomql `Account`, `ForexSymbol`, `Order`, `Positions`, or `Trader` objects.
+
+The shared project layer still uses `BrokerSnapshot`, `evaluate_live_execution_gate`, and `calculate_risk_position_size` so strategies remain portable beyond aiomql.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `RAM.get_amount` | `aiomql method` | Computes risk amount from account equity and configured risk percentage. |
+| `risk` | `float` | aiomql RAM risk percentage used to calculate amount at risk. |
+| `risk_to_reward` | `float` | aiomql RAM reward multiple for target calculations. |
+| `pips` | `float` | aiomql RAM stop or target distance input, depending on strategy setup. |
+| `check_losing_positions` | `aiomql method` | Helper for blocking new trades when losing-position rules are violated. |
+| `calculate_risk_position_size` | `project function` | Broker-neutral sizing from equity, stop distance, pip value, and lot constraints. |
+| `evaluate_live_execution_gate` | `project function` | Broker-neutral gate for spread, open positions, daily loss, fixed volume, and risk sizing. |
+
+Recommended layering:
+
+- Use aiomql `RAM` for aiomql-native account/risk checks that require live MT5 objects.
+- Convert live account, symbol, spread, and positions into `BrokerSnapshot`.
+- Run `evaluate_live_execution_gate` before order submission.
+- Store RAM output or rejection details in journal metadata for auditability.
+- Keep `RAM` out of shared strategy signal code so the same strategy can later run on stocks, crypto exchanges, Solana DEXs, or a paper broker.
+
 ## Position Trackers
 
 ### `TrackerDecision`

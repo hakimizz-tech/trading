@@ -5,7 +5,7 @@ from accounting.ledger import (
     AccountingError,
     LedgerPosting,
     LedgerTransaction,
-    SQLiteLedger,
+    TradeLedger,
     utc_now,
 )
 
@@ -14,6 +14,6 @@ __all__ = [
     "AccountingError",
     "LedgerPosting",
     "LedgerTransaction",
-    "SQLiteLedger",
+    "TradeLedger",
     "utc_now",
 ]

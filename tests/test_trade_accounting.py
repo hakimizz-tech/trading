@@ -2,13 +2,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from accounting import AccountingError, LedgerPosting, LedgerTransaction, SQLiteLedger
+from accounting import AccountingError, LedgerPosting, LedgerTransaction, TradeLedger
 
 
-class SQLiteLedgerTests(unittest.TestCase):
+class TradeLedgerTests(unittest.TestCase):
     def test_funding_and_trade_lifecycle_stays_balanced(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ledger = SQLiteLedger(Path(tmpdir) / "ledger.sqlite", base_currency="SOL")
+            ledger = TradeLedger(Path(tmpdir) / "ledger.sqlite", base_currency="SOL")
 
             ledger.record_funding(amount=10.0, occurred_at="2026-06-17T09:00:00Z")
             ledger.record_buy_fill(
@@ -41,7 +41,7 @@ class SQLiteLedgerTests(unittest.TestCase):
 
     def test_unbalanced_manual_transaction_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ledger = SQLiteLedger(Path(tmpdir) / "ledger.sqlite")
+            ledger = TradeLedger(Path(tmpdir) / "ledger.sqlite")
 
             with self.assertRaisesRegex(AccountingError, "Unbalanced transaction"):
                 ledger.record_transaction(
@@ -57,7 +57,7 @@ class SQLiteLedgerTests(unittest.TestCase):
 
     def test_realized_loss_debits_realized_gain_account(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ledger = SQLiteLedger(Path(tmpdir) / "ledger.sqlite")
+            ledger = TradeLedger(Path(tmpdir) / "ledger.sqlite")
 
             tx_id = ledger.record_sell_fill(
                 symbol="SOL",
@@ -75,7 +75,7 @@ class SQLiteLedgerTests(unittest.TestCase):
 
     def test_position_close_posts_profit_commission_and_swap_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ledger = SQLiteLedger(Path(tmpdir) / "ledger.sqlite")
+            ledger = TradeLedger(Path(tmpdir) / "ledger.sqlite")
 
             first_id = ledger.record_position_close(
                 symbol="XAUUSD",
@@ -110,7 +110,7 @@ class SQLiteLedgerTests(unittest.TestCase):
 
     def test_position_close_posts_short_loss(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
-            ledger = SQLiteLedger(Path(tmpdir) / "ledger.sqlite")
+            ledger = TradeLedger(Path(tmpdir) / "ledger.sqlite")
 
             tx_id = ledger.record_position_close(
                 symbol="GBPUSD",

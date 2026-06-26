@@ -10,7 +10,46 @@ The `journal` package records strategy signals, order attempts, broker-confirmed
 from journal import JournalEvent, TradeJournal, TradeRecord
 ```
 
-Do not import SQLite classes from strategy or execution code. Only wire a backend directly when configuring storage or writing backend tests.
+Do not import backend classes from strategy or execution code. Only wire a backend directly when configuring storage or writing backend tests.
+
+## Quick Start
+
+By default, `TradeJournal` stores records in `db/trade_journal.sqlite` through SQLAlchemy.
+
+```python
+from journal import TradeJournal
+
+journal = TradeJournal()
+```
+
+Use a custom local database path when running isolated strategy tests or paper-trading sessions:
+
+```python
+from journal import TradeJournal
+
+journal = TradeJournal("db/paper_trading.sqlite")
+```
+
+Use a SQLAlchemy database URL when moving to a production database:
+
+```python
+from journal import TradeJournal
+
+journal = TradeJournal("postgresql+psycopg://user:password@localhost/trading")  # pragma: allowlist secret
+```
+
+The rest of the journal API stays the same whether the database is SQLite, PostgreSQL, MySQL, or another SQLAlchemy-supported engine.
+
+## Main Objects
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `TradeJournal` | `service` | Main API used by strategies, bots, scripts, and reconciliation tools. |
+| `TradeRecord` | `dataclass` | Full trade record for planned, open, or closed trades. |
+| `JournalEvent` | `dataclass` | Lifecycle event attached to a trade, signal, order attempt, fill, rejection, or close. |
+| `TRADE_STATUSES` | `tuple[str, ...]` | Supported lifecycle states: `signal`, `blocked`, `submitted`, `filled`, `partially_filled`, `closed`, `rejected`, `error`. |
+| `SQLAlchemyJournalBackend` | `backend` | Default SQLAlchemy persistence backend. Strategies usually do not import it directly. |
+| `JournalBackend` | `Protocol` | Optional interface for specialized backend implementations. |
 
 ## TradeRecord Fields
 
@@ -116,6 +155,8 @@ trade_id = journal.record_signal_trade(
 )
 ```
 
+Use `record_signal_trade` when a strategy has made a decision and you want one trade row plus its first `signal` event. This is the common path for dry-run, paper-trading, and live execution gates.
+
 ## Record A Trade Manually
 
 ```python
@@ -140,6 +181,8 @@ trade_id = journal.record_trade(
 )
 ```
 
+Use `record_trade` when you already have a complete `TradeRecord`, such as from an imported backtest, manual review, or a custom execution adapter.
+
 ## Update A Closed Trade
 
 ```python
@@ -154,6 +197,36 @@ journal.update_exit(
     lessons="Exit followed the weekly rotation rule.",
 )
 ```
+
+`update_exit` should be used after a confirmed close. It updates realized fields and appends an `exit` event.
+
+## Record Lifecycle Events
+
+Use `record_event` for state changes that happen after the original signal.
+
+```python
+from journal import JournalEvent, TradeJournal
+
+journal = TradeJournal()
+
+journal.record_event(
+    JournalEvent(
+        trade_id=trade_id,
+        event_time="2026-06-17T10:00:01Z",
+        event_type="order_submitted",
+        token="EURUSD",
+        strategy="bollinger-adaptive",
+        direction="long",
+        price=1.0850,
+        size_sol=0.01,
+        status="submitted",
+        message="Order submitted after risk gate approval.",
+        metadata={"broker": "mt5", "magic": 260617},
+    )
+)
+```
+
+If the event includes `status`, `TradeJournal` also updates the parent trade status.
 
 ## Record aiomql History
 
@@ -181,9 +254,34 @@ journal.record_broker_history_event(
 )
 ```
 
+This is useful when importing confirmed aiomql `History` deals or orders. Broker ids are stored in event metadata for reconciliation with accounting.
+
+## Query Journal Records
+
+```python
+from journal import TradeJournal
+
+journal = TradeJournal()
+
+all_trades = journal.list_trades()
+open_signals = journal.list_trades(status="signal")
+strategy_trades = journal.list_trades(strategy="bollinger-adaptive")
+events = journal.list_events(trade_id)
+summary = journal.summary_by_strategy()
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `list_trades()` | `list[dict[str, Any]]` | Returns all journal trades ordered by entry time and id. |
+| `list_trades(status="closed")` | `list[dict[str, Any]]` | Returns trades matching one lifecycle status. |
+| `list_trades(strategy="name")` | `list[dict[str, Any]]` | Returns trades for one strategy. |
+| `get_trade(trade_id)` | `dict[str, Any] \| None` | Returns one trade by UUID. |
+| `list_events(trade_id)` | `list[dict[str, Any]]` | Returns lifecycle events for one trade. |
+| `summary_by_strategy()` | `list[dict[str, Any]]` | Returns aggregate trade counts, wins, losses, and P&L by strategy. |
+
 ## Backend Contract
 
-`TradeJournal` owns validation, UUID generation, lifecycle behavior, JSON conversion, and broker-history normalization. `JournalBackend` owns persistence only.
+`TradeJournal` owns validation, UUID generation, lifecycle behavior, JSON conversion, and broker-history normalization. `JournalBackend` owns persistence only. The default backend is `SQLAlchemyJournalBackend`, which accepts either a local SQLite file path or a full SQLAlchemy database URL.
 
 | Field | Type | Description |
 | --- | --- | --- |
@@ -196,12 +294,20 @@ journal.record_broker_history_event(
 | `list_events(trade_id)` | `Callable[..., list[dict]]` | Return stored event rows. |
 | `summary_by_strategy()` | `Callable[..., list[dict]]` | Return strategy-level summary rows. |
 
-To add PostgreSQL, MySQL, or another production database, create a backend under `journal/backends/` that implements this protocol, then inject it:
+For SQLite, pass a local path:
 
 ```python
 from journal import TradeJournal
 
-journal = TradeJournal(backend=PostgresJournalBackend("postgresql://..."))
+journal = TradeJournal("db/trade_journal.sqlite")
+```
+
+For PostgreSQL, MySQL, or another SQLAlchemy-supported database, pass a database URL:
+
+```python
+from journal import TradeJournal
+
+journal = TradeJournal("postgresql+psycopg://user:password@localhost/trading")  # pragma: allowlist secret
 ```
 
 The backend receives already-normalized dictionaries. It should not reimplement journal validation, lifecycle rules, or trade-id generation.
@@ -220,13 +326,13 @@ Use:
 - `entry_date` for time ordering and date filtering.
 - broker ids in `metadata` for MT5 tickets, deals, orders, and position ids.
 
-SQLite event row ids are internal storage ids only. Application logic should use the trade UUID and broker metadata.
+Event row ids are internal storage ids only. Application logic should use the trade UUID and broker metadata.
 
 ## Developer Rules
 
 - Use `TradeJournal` from strategies, bots, scripts, and aiomql execution code.
 - Use `TradeRecord` when constructing a full trade object manually.
 - Use `record_signal_trade` when a strategy produces a fresh signal.
-- Add database engines under `journal/backends/`.
+- Use SQLAlchemy database URLs when moving from local SQLite to production storage.
 - Keep SQL and database driver details out of strategies and execution adapters.
 - Post accounting ledger entries only from broker-confirmed fills or closes, not from raw signals.

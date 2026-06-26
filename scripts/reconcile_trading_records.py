@@ -6,15 +6,22 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Sequence
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from accounting import TradeLedger
+from journal import TradeJournal
 
 
 def main() -> None:
     args = _parse_args()
-    journal_trades = _journal_trades(args.journal_db)
-    ledger_transactions = _ledger_transactions(args.ledger_db)
+    journal_trades = _journal_trades(str(args.journal_db))
+    ledger_transactions = _ledger_transactions(str(args.ledger_db))
     broker_ids = _broker_external_ids(args.broker_deals_csv) if args.broker_deals_csv else set()
 
     ledger_external_ids = {str(tx["external_id"]) for tx in ledger_transactions if tx.get("external_id")}
@@ -42,22 +49,16 @@ def main() -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
-def _journal_trades(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def _journal_trades(database: str) -> list[dict[str, Any]]:
+    if "://" not in database and not Path(database).exists():
         return []
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM trades ORDER BY entry_date, id").fetchall()
-    return [dict(row) for row in rows]
+    return TradeJournal(database).list_trades()
 
 
-def _ledger_transactions(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
+def _ledger_transactions(database: str) -> list[dict[str, Any]]:
+    if "://" not in database and not Path(database).exists():
         return []
-    with sqlite3.connect(path) as conn:
-        conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM ledger_transactions ORDER BY occurred_at, id").fetchall()
-    return [dict(row) for row in rows]
+    return TradeLedger(database).list_transactions()
 
 
 def _broker_external_ids(path: Path) -> set[str]:
@@ -81,6 +82,9 @@ def _first_existing(columns: Sequence[str], candidates: tuple[str, ...]) -> str 
 
 
 def _metadata(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row.get("metadata")
+    if isinstance(metadata, dict):
+        return metadata
     try:
         return json.loads(str(row.get("metadata_json") or "{}"))
     except json.JSONDecodeError:
@@ -89,8 +93,8 @@ def _metadata(row: dict[str, Any]) -> dict[str, Any]:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Reconcile trade journal, ledger, and optional broker deal export.")
-    parser.add_argument("--journal-db", type=Path, default=Path("db/trade_journal.sqlite"))
-    parser.add_argument("--ledger-db", type=Path, default=Path("db/trade_accounting.sqlite"))
+    parser.add_argument("--journal-db", default="db/trade_journal.sqlite")
+    parser.add_argument("--ledger-db", default="db/trade_accounting.sqlite")
     parser.add_argument("--broker-deals-csv", type=Path, default=None)
     return parser.parse_args()
 

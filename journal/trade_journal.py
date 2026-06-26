@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-from journal.backends import JournalBackend, SQLiteJournalBackend
+from journal.backends import JournalBackend, SQLAlchemyJournalBackend
 
 
 class TradeJournalError(RuntimeError):
@@ -91,7 +91,7 @@ class TradeJournal:
         *,
         backend: JournalBackend | None = None,
     ) -> None:
-        self.backend = backend or SQLiteJournalBackend(path)
+        self.backend = backend or SQLAlchemyJournalBackend(path)
 
     def record_trade(self, trade: TradeRecord) -> str:
         """Insert or replace a trade record and return its trade id."""

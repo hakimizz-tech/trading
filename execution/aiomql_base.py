@@ -10,7 +10,7 @@ from typing import Any, ClassVar, cast
 
 import pandas as pd
 
-from accounting import SQLiteLedger
+from accounting import TradeLedger
 from execution.gates import evaluate_live_execution_gate
 from execution.state import (
     AccountSnapshot,
@@ -98,7 +98,7 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
         self.trader = trader or ScalpTrader(symbol=self.symbol)  # type: ignore[operator]
         self.trade_parameters: dict[str, Any] = self._parameter_snapshot()
         self.journal = TradeJournal(str(self.journal_db_path)) if bool(self.journal_enabled) else None
-        self.ledger = SQLiteLedger(str(self.accounting_db_path)) if bool(self.accounting_enabled) else None
+        self.ledger = TradeLedger(str(self.accounting_db_path)) if bool(self.accounting_enabled) else None
         self.snapshot_provider = snapshot_provider
 
     async def find_entry(self) -> None:

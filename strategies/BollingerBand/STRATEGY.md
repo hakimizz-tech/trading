@@ -125,7 +125,7 @@ The adaptive engine supports three machine-testable modes:
 - Pure-Python foundation:
   - `execution.state` defines normalized account, contract, spread, and open-position snapshots.
   - `execution.sizing` defines fixed-fractional broker-aware lot sizing.
-  - `accounting.SQLiteLedger.record_position_close` posts confirmed MT5/CFD realized P&L, commission, and swap with idempotency by broker external id.
+  - `accounting.TradeLedger.record_position_close` posts confirmed MT5/CFD realized P&L, commission, and swap with idempotency by broker external id.
   - Journal statuses are standardized as `signal`, `blocked`, `submitted`, `filled`, `partially_filled`, `closed`, `rejected`, and `error`.
 
 ## Filters
@@ -375,7 +375,7 @@ The adaptive engine supports three machine-testable modes:
 - Indicators: pandas/numpy by default; optional TA-Lib acceleration for RSI and MACD.
 - Backtesting: pandas research backtest and optional vectorbt adapter.
 - Execution: aiomql on Windows with MetaTrader 5.
-- Persistence: SQLite trade journal and double-entry accounting ledger.
+- Persistence: SQLAlchemy-backed trade journal and double-entry accounting ledger, defaulting to local SQLite paths.
 - Visualization: shared `visualization` package.
 
 ## Notes
