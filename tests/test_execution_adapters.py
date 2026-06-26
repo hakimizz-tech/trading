@@ -1,7 +1,15 @@
 import unittest
 
 from execution.adapters import BrokerAdapter, BrokerDataAdapter, BrokerExecutionAdapter
-from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, SymbolContract
+from execution.state import (
+    AccountSnapshot,
+    BrokerFill,
+    BrokerOrderCancelResult,
+    BrokerOrderCheck,
+    BrokerPendingOrder,
+    BrokerSnapshot,
+    SymbolContract,
+)
 
 
 class ExecutionAdapterContractTests(unittest.TestCase):
@@ -11,6 +19,27 @@ class ExecutionAdapterContractTests(unittest.TestCase):
         self.assertIsInstance(adapter, BrokerDataAdapter)
         self.assertIsInstance(adapter, BrokerExecutionAdapter)
         self.assertIsInstance(adapter, BrokerAdapter)
+
+    def test_order_preflight_and_pending_order_shapes(self) -> None:
+        check = BrokerOrderCheck(
+            allowed=True,
+            symbol="EURUSD",
+            direction="long",
+            volume=0.1,
+            price=1.1,
+            margin=25.0,
+            expected_profit=50.0,
+            expected_loss=-20.0,
+            retcode=0,
+            comment="Done",
+        )
+        pending = BrokerPendingOrder(ticket="123", symbol="EURUSD", direction="long", volume=0.1, price=1.1)
+        cancel = BrokerOrderCancelResult(ticket="123", cancelled=True, retcode=0)
+
+        self.assertTrue(check.allowed)
+        self.assertEqual(check.margin, 25.0)
+        self.assertEqual(pending.ticket, "123")
+        self.assertTrue(cancel.cancelled)
 
 
 class FakeBrokerAdapter:
@@ -32,6 +61,32 @@ class FakeBrokerAdapter:
         parameters: dict[str, object] | None = None,
     ) -> BrokerFill:
         return BrokerFill(external_id="fill-1", symbol=symbol, direction=direction, volume=volume, price=1.1)
+
+    async def check_market_order(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        volume: float,
+        parameters: dict[str, object] | None = None,
+    ) -> BrokerOrderCheck:
+        return BrokerOrderCheck(allowed=True, symbol=symbol, direction=direction, volume=volume, margin=25.0)
+
+    async def pending_orders(
+        self,
+        *,
+        symbol: str | None = None,
+        strategy: str | None = None,
+    ) -> list[BrokerPendingOrder]:
+        return [BrokerPendingOrder(ticket="pending-1", symbol=symbol or "EURUSD", direction="long", volume=0.1, price=1.1)]
+
+    async def cancel_order(
+        self,
+        *,
+        ticket: str,
+        symbol: str | None = None,
+    ) -> BrokerOrderCancelResult:
+        return BrokerOrderCancelResult(ticket=ticket, cancelled=True)
 
 
 if __name__ == "__main__":

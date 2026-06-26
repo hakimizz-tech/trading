@@ -12,7 +12,16 @@ import pandas as pd
 
 from accounting import SQLiteLedger
 from execution.gates import evaluate_live_execution_gate
-from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, OpenPosition, SymbolContract
+from execution.state import (
+    AccountSnapshot,
+    BrokerFill,
+    BrokerOrderCancelResult,
+    BrokerOrderCheck,
+    BrokerPendingOrder,
+    BrokerSnapshot,
+    OpenPosition,
+    SymbolContract,
+)
 from journal import JournalEvent, TradeJournal, utc_now
 from market_data.ohlcv import to_ohlcv_frame as normalize_ohlcv_frame
 
@@ -528,6 +537,80 @@ def fill_price_return_pct(fill: BrokerFill) -> float:
     if fill.direction == "short":
         return (fill.entry_price - exit_price) / fill.entry_price * 100.0
     return (exit_price - fill.entry_price) / fill.entry_price * 100.0
+
+
+def extract_order_check(
+    *,
+    check_result: Any,
+    symbol: str,
+    direction: str,
+    volume: float,
+    parameters: dict[str, Any] | None = None,
+) -> BrokerOrderCheck:
+    """Normalize an aiomql/MT5 order_check result into broker-neutral state."""
+    params = parameters or {}
+    retcode = int(number_from(check_result, ("retcode",), default=0) or 0)
+    comment = text_from(check_result, ("comment",))
+    return BrokerOrderCheck(
+        allowed=_order_check_allowed(retcode=retcode, comment=comment),
+        symbol=text_from(check_result, ("symbol",), default=symbol) or symbol,
+        direction=direction,
+        volume=float(number_from(check_result, ("volume",), default=volume) or volume),
+        price=number_from(check_result, ("price",), default=optional_float(params.get("entry_price"))),
+        margin=number_from(check_result, ("margin",)),
+        expected_profit=number_from(check_result, ("profit", "expected_profit"), default=optional_float(params.get("expected_profit"))),
+        expected_loss=number_from(check_result, ("loss", "expected_loss"), default=optional_float(params.get("expected_loss"))),
+        retcode=retcode,
+        comment=comment,
+        raw=check_result,
+    )
+
+
+def pending_order_from_source(value: Any, *, strategy: str | None = None) -> BrokerPendingOrder | None:
+    """Normalize aiomql TradeOrder-like objects into a broker-neutral pending order."""
+    ticket = text_from(value, ("ticket", "order", "id"))
+    symbol = text_from(value, ("symbol",))
+    volume = number_from(value, ("volume_current", "volume_initial", "volume"))
+    price = number_from(value, ("price_open", "price", "price_current"))
+    if ticket is None or symbol is None or volume is None or price is None:
+        return None
+    raw_type = str(value_from(value, "type") or value_from(value, "direction") or "").upper()
+    direction = "short" if "SELL" in raw_type or raw_type in {"1", "-1", "SHORT"} else "long"
+    comment = text_from(value, ("comment",))
+    return BrokerPendingOrder(
+        ticket=ticket,
+        symbol=symbol,
+        direction=direction,
+        volume=float(volume),
+        price=float(price),
+        stop_loss=number_from(value, ("sl", "stop_loss")),
+        take_profit=number_from(value, ("tp", "take_profit")),
+        strategy=strategy if strategy is not None and (comment is None or strategy in comment) else None,
+        magic=int(number_from(value, ("magic",), default=0) or 0) or None,
+        comment=comment,
+        raw=value,
+    )
+
+
+def order_cancel_result_from_source(value: Any, *, ticket: str) -> BrokerOrderCancelResult:
+    """Normalize an aiomql cancel_order/send_order response."""
+    retcode = int(number_from(value, ("retcode",), default=0) or 0)
+    comment = text_from(value, ("comment",))
+    return BrokerOrderCancelResult(
+        ticket=text_from(value, ("order", "ticket"), default=ticket) or ticket,
+        cancelled=_order_check_allowed(retcode=retcode, comment=comment),
+        retcode=retcode,
+        comment=comment,
+        raw=value,
+    )
+
+
+def _order_check_allowed(*, retcode: int, comment: str | None) -> bool:
+    if retcode in {0, 10008, 10009}:
+        return True
+    if comment is None:
+        return False
+    return comment.strip().lower() in {"done", "ok", "success", "accepted"}
 
 
 def positions_from_sources(*, symbol: Any, trader: Any) -> list[Any]:

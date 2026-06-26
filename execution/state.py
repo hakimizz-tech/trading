@@ -116,6 +116,72 @@ class BrokerFill:
         _require_positive(self.price, "price")
 
 
+@dataclass(frozen=True)
+class BrokerOrderCheck:
+    """Normalized broker preflight result for an order request."""
+
+    allowed: bool
+    symbol: str
+    direction: str
+    volume: float
+    price: float | None = None
+    margin: float | None = None
+    expected_profit: float | None = None
+    expected_loss: float | None = None
+    retcode: int | None = None
+    comment: str | None = None
+    raw: object | None = None
+
+    def __post_init__(self) -> None:
+        if self.direction not in {"long", "short"}:
+            raise ValueError("direction must be 'long' or 'short'")
+        _require_positive(self.volume, "volume")
+        if self.price is not None:
+            _require_positive(self.price, "price")
+        if self.margin is not None:
+            _require_non_negative(self.margin, "margin")
+
+
+@dataclass(frozen=True)
+class BrokerPendingOrder:
+    """Normalized active pending order."""
+
+    ticket: str
+    symbol: str
+    direction: str
+    volume: float
+    price: float
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    strategy: str | None = None
+    magic: int | None = None
+    comment: str | None = None
+    raw: object | None = None
+
+    def __post_init__(self) -> None:
+        if not self.ticket:
+            raise ValueError("ticket is required")
+        if self.direction not in {"long", "short"}:
+            raise ValueError("direction must be 'long' or 'short'")
+        _require_positive(self.volume, "volume")
+        _require_positive(self.price, "price")
+
+
+@dataclass(frozen=True)
+class BrokerOrderCancelResult:
+    """Normalized broker response after cancelling a pending order."""
+
+    ticket: str
+    cancelled: bool
+    retcode: int | None = None
+    comment: str | None = None
+    raw: object | None = None
+
+    def __post_init__(self) -> None:
+        if not self.ticket:
+            raise ValueError("ticket is required")
+
+
 def _require_positive(value: float, name: str) -> None:
     if value <= 0:
         raise ValueError(f"{name} must be positive")

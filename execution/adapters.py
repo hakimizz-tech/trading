@@ -10,8 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, Protocol, runtime_checkable
-
-from execution.state import BrokerFill, BrokerSnapshot
+from execution.state import BrokerFill, BrokerOrderCancelResult, BrokerOrderCheck, BrokerPendingOrder, BrokerSnapshot
 
 
 @runtime_checkable
@@ -40,6 +39,35 @@ class BrokerExecutionAdapter(Protocol):
         parameters: Mapping[str, Any] | None = None,
     ) -> BrokerFill | None:
         """Place an order and return a normalized fill when the broker confirms one."""
+        ...
+
+    async def check_market_order(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        volume: float,
+        parameters: Mapping[str, Any] | None = None,
+    ) -> BrokerOrderCheck:
+        """Validate margin/profit/loss assumptions before placing an order."""
+        ...
+
+    async def pending_orders(
+        self,
+        *,
+        symbol: str | None = None,
+        strategy: str | None = None,
+    ) -> list[BrokerPendingOrder]:
+        """Return active pending orders known to the broker."""
+        ...
+
+    async def cancel_order(
+        self,
+        *,
+        ticket: str,
+        symbol: str | None = None,
+    ) -> BrokerOrderCancelResult:
+        """Cancel an active pending order by broker ticket."""
         ...
 
 

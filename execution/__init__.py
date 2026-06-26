@@ -15,8 +15,11 @@ try:
         aiomql_available,
         broker_snapshot_from_sources,
         extract_broker_fill,
+        extract_order_check,
+        order_cancel_result_from_source,
         optional_float,
         optional_string,
+        pending_order_from_source,
         require_aiomql,
         resolve_timeframe,
         to_ohlcv_frame,
@@ -38,6 +41,15 @@ except ImportError as exc:  # pragma: no cover - depends on optional aiomql/pand
         require_aiomql()
 
     def extract_broker_fill(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def extract_order_check(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def pending_order_from_source(*args: Any, **kwargs: Any) -> Any:
+        require_aiomql()
+
+    def order_cancel_result_from_source(*args: Any, **kwargs: Any) -> Any:
         require_aiomql()
 
     def resolve_timeframe(*args: Any, **kwargs: Any) -> Any:
@@ -62,11 +74,23 @@ except ImportError as exc:  # pragma: no cover - depends on optional aiomql/pand
 from execution.adapters import BrokerAdapter, BrokerDataAdapter, BrokerExecutionAdapter
 from execution.gates import ExecutionGateResult, evaluate_live_execution_gate
 from execution.sizing import PositionSizeResult, calculate_risk_position_size
-from execution.state import AccountSnapshot, BrokerFill, BrokerSnapshot, OpenPosition, SymbolContract
+from execution.state import (
+    AccountSnapshot,
+    BrokerFill,
+    BrokerOrderCancelResult,
+    BrokerOrderCheck,
+    BrokerPendingOrder,
+    BrokerSnapshot,
+    OpenPosition,
+    SymbolContract,
+)
 
 __all__ = [
     "AccountSnapshot",
     "BrokerFill",
+    "BrokerOrderCancelResult",
+    "BrokerOrderCheck",
+    "BrokerPendingOrder",
     "BrokerAdapter",
     "BrokerDataAdapter",
     "BrokerExecutionAdapter",
@@ -87,8 +111,11 @@ __all__ = [
     "broker_snapshot_from_sources",
     "calculate_risk_position_size",
     "extract_broker_fill",
+    "extract_order_check",
+    "order_cancel_result_from_source",
     "optional_float",
     "optional_string",
+    "pending_order_from_source",
     "require_aiomql",
     "resolve_timeframe",
     "to_ohlcv_frame",

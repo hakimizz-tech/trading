@@ -106,8 +106,10 @@ class TradeJournal:
         """Append a lifecycle event and return the backend row id."""
         if not event.event_type.strip():
             raise TradeJournalError("event_type is required")
+        
         if event.status is not None and event.status not in TRADE_STATUSES:
             raise TradeJournalError(f"status must be one of: {', '.join(TRADE_STATUSES)}")
+        
         payload = {
             "trade_id": event.trade_id,
             "event_time": event.event_time,
@@ -121,6 +123,7 @@ class TradeJournal:
             "message": event.message,
             "metadata_json": _json_dumps(event.metadata),
         }
+        
         row_id = self.backend.insert_event(payload)
         if event.trade_id is not None and event.status is not None:
             self.backend.update_trade_status(event.trade_id, status=event.status, updated_at=utc_now())
@@ -145,9 +148,12 @@ class TradeJournal:
         """
         if item_type not in {"deal", "order"}:
             raise TradeJournalError("item_type must be 'deal' or 'order'")
+        
         event_status = status or ("closed" if item_type == "deal" and _history_item_is_close(item) else "filled")
+
         if event_status not in TRADE_STATUSES:
             raise TradeJournalError(f"status must be one of: {', '.join(TRADE_STATUSES)}")
+        
         event = JournalEvent(
             trade_id=trade_id,
             event_time=_history_event_time(item),
