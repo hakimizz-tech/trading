@@ -3,8 +3,8 @@
 from journal.backends import JournalBackend, SQLiteJournalBackend
 from journal.trade_journal import (
     JournalEvent,
-    JournalTrade,
     TRADE_STATUSES,
+    TradeRecord,
     TradeJournal,
     TradeJournalError,
     utc_now,
@@ -12,10 +12,10 @@ from journal.trade_journal import (
 
 __all__ = [
     "JournalEvent",
-    "JournalTrade",
     "JournalBackend",
     "SQLiteJournalBackend",
     "TRADE_STATUSES",
+    "TradeRecord",
     "TradeJournal",
     "TradeJournalError",
     "utc_now",

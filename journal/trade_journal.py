@@ -30,7 +30,7 @@ TRADE_STATUSES: tuple[str, ...] = (
 
 
 @dataclass(frozen=True)
-class JournalTrade:
+class TradeRecord:
     """A structured journal record for a planned, open, or closed trade."""
 
     token: str
@@ -93,7 +93,7 @@ class TradeJournal:
     ) -> None:
         self.backend = backend or SQLiteJournalBackend(path)
 
-    def record_trade(self, trade: JournalTrade) -> str:
+    def record_trade(self, trade: TradeRecord) -> str:
         """Insert or replace a trade record and return its trade id."""
         self._validate_trade(trade)
         trade_id = trade.id or self.next_trade_id(trade.entry_date)
@@ -252,7 +252,7 @@ class TradeJournal:
     ) -> str:
         """Convenience method for journaling an executable strategy signal."""
         now = entry_date or utc_now()
-        trade = JournalTrade(
+        trade = TradeRecord(
             token=token,
             direction=direction,
             entry_date=now,
@@ -316,7 +316,7 @@ class TradeJournal:
         return str(uuid.uuid4())
 
     @staticmethod
-    def _validate_trade(trade: JournalTrade) -> None:
+    def _validate_trade(trade: TradeRecord) -> None:
         if not trade.token.strip():
             raise TradeJournalError("token is required")
         if trade.direction not in {"long", "short"}:
@@ -341,7 +341,7 @@ def utc_now() -> str:
     return datetime.now(tz=UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _trade_payload(trade: JournalTrade, *, trade_id: str, now: str) -> dict[str, Any]:
+def _trade_payload(trade: TradeRecord, *, trade_id: str, now: str) -> dict[str, Any]:
     payload = asdict(trade)
     payload["id"] = trade_id
     payload["tags_json"] = _json_dumps(payload.pop("tags"))

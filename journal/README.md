@@ -1,10 +1,97 @@
 # Trade Journal
 
-The journal package records strategy signals, order attempts, broker-confirmed fills, exits, and trade-review metadata. Strategy and execution code should use `TradeJournal`; database-specific code should live behind a `JournalBackend`.
+The `journal` package records strategy signals, order attempts, broker-confirmed fills, exits, and post-trade review notes. Application code should use `TradeJournal`; database code should live behind a `JournalBackend`.
 
-## Default Usage
+`TradeRecord` is the data object for one planned, open, or closed trade. `TradeJournal` is the service that validates records, generates UUID trade ids, writes events, and reads records back.
 
-Use `TradeJournal` directly in strategies, bots, scripts, and tests. With no custom backend, it stores records in SQLite.
+## Imports
+
+```python
+from journal import JournalEvent, TradeJournal, TradeRecord
+```
+
+Do not import SQLite classes from strategy or execution code. Only wire a backend directly when configuring storage or writing backend tests.
+
+## TradeRecord Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `token` | `str` | Symbol, asset, or market identifier such as `EURUSD`, `SPY`, or `SOL`. |
+| `direction` | `str` | Trade side. Must be `long` or `short`. |
+| `entry_date` | `str` | Entry timestamp in ISO format, preferably UTC with `Z`. |
+| `entry_price` | `float` | Planned or filled entry price. Must be positive. |
+| `size_sol` | `float` | Position size. The legacy field name is neutralized by context; forex bots may store lots here. |
+| `strategy` | `str` | Strategy name used for attribution and reporting. |
+| `rationale` | `str` | Entry reason recorded before execution. |
+| `id` | `str \| None` | Optional UUID trade id. If omitted, `TradeJournal` generates one. |
+| `size_usd` | `float \| None` | Optional notional value. |
+| `setup_quality` | `int \| None` | Optional discretionary score from 1 to 10. |
+| `exit_date` | `str \| None` | Exit timestamp after close. |
+| `exit_price` | `float \| None` | Realized exit price. |
+| `pnl_sol` | `float \| None` | Realized P&L in the strategy/accounting unit. |
+| `pnl_pct` | `float \| None` | Realized percentage return. |
+| `outcome` | `str \| None` | `win`, `loss`, or `breakeven`. |
+| `hold_time_minutes` | `int \| None` | Computed holding time after exit update. |
+| `emotional_state` | `str \| None` | Optional human review field. |
+| `lessons` | `str \| None` | Optional post-trade notes. |
+| `tags` | `list[str]` | Strategy, behavior, setup, or review tags. |
+| `stop_price` | `float \| None` | Planned stop price. |
+| `target_price` | `float \| None` | Planned target price. |
+| `risk_reward` | `float \| None` | Planned reward-to-risk ratio. |
+| `fees_sol` | `float \| None` | Fees or commission in the strategy/accounting unit. |
+| `slippage_bps` | `float \| None` | Estimated or realized slippage in basis points. |
+| `expected_profit` | `float \| None` | Expected profit before or during order submission. |
+| `actual_profit` | `float \| None` | Realized profit after broker-confirmed close. |
+| `status` | `str` | Lifecycle status. Defaults to `signal`. |
+| `mode` | `str` | Execution mode such as `dry_run`, `paper`, or `live`. |
+| `source` | `str` | Signal/execution source such as `strategy` or `aiomql:BollingerBands`. |
+| `metadata` | `dict[str, Any]` | Extra structured context: timeframe, broker ids, risk settings, raw broker payloads. |
+
+## JournalEvent Fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `event_type` | `str` | Event name such as `signal`, `order_submitted`, `broker_history_deal`, or `exit`. |
+| `event_time` | `str` | Event timestamp in ISO format. |
+| `token` | `str` | Symbol or market identifier. |
+| `strategy` | `str` | Strategy associated with the event. |
+| `trade_id` | `str \| None` | UUID of the parent trade when available. |
+| `direction` | `str \| None` | `long`, `short`, or broker-normalized side. |
+| `price` | `float \| None` | Event price. |
+| `size_sol` | `float \| None` | Event size. Forex bots may store lots here. |
+| `status` | `str \| None` | Optional lifecycle status to apply to the parent trade. |
+| `message` | `str \| None` | Human-readable event message. |
+| `metadata` | `dict[str, Any]` | Broker ids, raw payloads, rejection reasons, or strategy context. |
+
+## Lifecycle Statuses
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `signal` | `str` | Strategy produced a trade idea. |
+| `blocked` | `str` | Risk, spread, session, or execution gate blocked the trade. |
+| `submitted` | `str` | Order was submitted to the broker or execution venue. |
+| `filled` | `str` | Broker confirmed a full fill. |
+| `partially_filled` | `str` | Broker confirmed a partial fill. |
+| `closed` | `str` | Broker or backtest confirmed the position was closed. |
+| `rejected` | `str` | Broker or execution adapter rejected the order. |
+| `error` | `str` | Unexpected execution or journal failure occurred. |
+
+## TradeJournal Methods
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `record_trade(trade)` | `str` | Writes a `TradeRecord` and returns its UUID trade id. |
+| `record_signal_trade(...)` | `str` | Convenience method for recording a signal plus its first `signal` event. |
+| `record_event(event)` | `int` | Appends a `JournalEvent`; if the event has a status, the parent trade status is updated. |
+| `record_broker_history_event(...)` | `int` | Normalizes aiomql/MT5 history deals or orders into journal events. |
+| `update_exit(...)` | `None` | Writes realized exit information and creates an `exit` event. |
+| `get_trade(trade_id)` | `dict[str, Any] \| None` | Reads one trade by UUID. |
+| `list_trades(...)` | `list[dict[str, Any]]` | Lists trades, optionally filtered by status or strategy. |
+| `list_events(trade_id)` | `list[dict[str, Any]]` | Lists all events or only events for one trade UUID. |
+| `summary_by_strategy()` | `list[dict[str, Any]]` | Returns backend-provided strategy summary rows. |
+| `next_trade_id()` | `str` | Generates a UUID4 trade id. |
+
+## Record A Strategy Signal
 
 ```python
 from journal import TradeJournal
@@ -22,180 +109,124 @@ trade_id = journal.record_signal_trade(
     status="submitted",
     mode="live",
     source="aiomql:BollingerBands",
+    stop_price=1.0800,
+    target_price=1.0950,
     expected_profit=25.5,
-    metadata={"timeframe": "M15"},
+    metadata={"timeframe": "M15", "risk_per_trade": 0.01},
 )
+```
 
+## Record A Trade Manually
+
+```python
+from journal import TradeJournal, TradeRecord
+
+journal = TradeJournal()
+
+trade_id = journal.record_trade(
+    TradeRecord(
+        token="SPY",
+        direction="long",
+        entry_date="2026-06-17T14:30:00Z",
+        entry_price=540.25,
+        size_sol=10,
+        strategy="rising-assets",
+        rationale="ETF ranked in the top momentum bucket.",
+        status="filled",
+        mode="paper",
+        source="backtest",
+        tags=["momentum", "weekly-rotation"],
+    )
+)
+```
+
+## Update A Closed Trade
+
+```python
 journal.update_exit(
     trade_id,
-    exit_date="2026-06-17T11:30:00Z",
-    exit_price=1.0910,
-    pnl_sol=18.75,
-    pnl_pct=0.55,
+    exit_date="2026-06-21T20:00:00Z",
+    exit_price=548.10,
+    pnl_sol=78.50,
+    pnl_pct=1.45,
     outcome="win",
-    actual_profit=18.75,
+    actual_profit=78.50,
+    lessons="Exit followed the weekly rotation rule.",
 )
 ```
 
-## Public API
-
-Application code should import from `journal`:
+## Record aiomql History
 
 ```python
-from journal import JournalEvent, JournalTrade, TradeJournal
+journal.record_broker_history_event(
+    {
+        "deal": 987654,
+        "order": 123456,
+        "position_id": 444,
+        "symbol": "EURUSD",
+        "type": "BUY",
+        "entry": "OUT",
+        "volume": 0.01,
+        "price": 1.0875,
+        "profit": 12.5,
+        "commission": -0.07,
+        "swap": 0.0,
+        "time": "2026-06-17T10:15:00Z",
+        "magic": 20260617,
+        "comment": "bollinger-adaptive",
+    },
+    item_type="deal",
+    strategy="bollinger-adaptive",
+    trade_id=trade_id,
+)
 ```
 
-Do not import from `journal.backends.sqlite` unless you are configuring or testing storage directly.
+## Backend Contract
 
-## Backend Design
+`TradeJournal` owns validation, UUID generation, lifecycle behavior, JSON conversion, and broker-history normalization. `JournalBackend` owns persistence only.
 
-`TradeJournal` owns trade-journal behavior:
+| Field | Type | Description |
+| --- | --- | --- |
+| `upsert_trade(payload)` | `Callable` | Insert or replace one normalized trade payload. |
+| `insert_event(payload)` | `Callable[..., int]` | Insert one normalized event payload and return a backend row id. |
+| `update_trade_status(...)` | `Callable` | Update the status and timestamp for one trade UUID. |
+| `update_trade_exit(...)` | `Callable` | Update realized exit fields for one trade UUID. |
+| `get_trade(trade_id)` | `Callable[..., dict \| None]` | Return one stored trade row. |
+| `list_trades(...)` | `Callable[..., list[dict]]` | Return stored trade rows, optionally filtered. |
+| `list_events(trade_id)` | `Callable[..., list[dict]]` | Return stored event rows. |
+| `summary_by_strategy()` | `Callable[..., list[dict]]` | Return strategy-level summary rows. |
 
-- validates trade fields
-- generates UUID trade ids
-- normalizes lifecycle statuses
-- records broker-history events
-- converts JSON metadata
-- exposes strategy-friendly methods
-
-`JournalBackend` owns persistence:
-
-- insert or update trade payloads
-- insert event payloads
-- update trade status
-- update exit fields
-- read trades and events
-- provide strategy summaries
-
-This keeps strategy code stable if the database changes from SQLite to PostgreSQL, MySQL, or another production store.
-
-## Implementing A New Backend
-
-Create a class that implements `journal.backends.JournalBackend`.
+To add PostgreSQL, MySQL, or another production database, create a backend under `journal/backends/` that implements this protocol, then inject it:
 
 ```python
-from typing import Any
-
 from journal import TradeJournal
-
-
-class PostgresJournalBackend:
-    def __init__(self, dsn: str) -> None:
-        self.dsn = dsn
-
-    def upsert_trade(self, payload: dict[str, Any]) -> None:
-        ...
-
-    def insert_event(self, payload: dict[str, Any]) -> int:
-        ...
-
-    def update_trade_status(self, trade_id: str, *, status: str, updated_at: str) -> None:
-        ...
-
-    def update_trade_exit(self, trade_id: str, payload: dict[str, Any]) -> None:
-        ...
-
-    def get_trade(self, trade_id: str) -> dict[str, Any] | None:
-        ...
-
-    def list_trades(self, *, status: str | None = None, strategy: str | None = None) -> list[dict[str, Any]]:
-        ...
-
-    def list_events(self, trade_id: str | None = None) -> list[dict[str, Any]]:
-        ...
-
-    def summary_by_strategy(self) -> list[dict[str, Any]]:
-        ...
 
 journal = TradeJournal(backend=PostgresJournalBackend("postgresql://..."))
 ```
 
-The backend receives already-normalized payload dictionaries. It should not reimplement journal validation or trade-id generation.
+The backend receives already-normalized dictionaries. It should not reimplement journal validation, lifecycle rules, or trade-id generation.
 
 ## Trade IDs
 
-Trade ids are UUID strings generated by `TradeJournal`.
+Trade ids are UUID4 strings generated by `TradeJournal`.
 
 ```text
 4d3f30a0-7406-47c9-9f3e-58df2f4f61cf
 ```
 
-Do not generate sequential ids such as `1`, `2`, or `T-20260617-001` in a backend. Sequential ids leak ordering assumptions into storage and become awkward when multiple bots, brokers, or databases write records concurrently.
-
 Use:
 
-- `id`: stable UUID identity for one journal trade
-- `entry_date`: time ordering and date filtering
-- broker ids in `metadata`: broker reconciliation, MT5 tickets, deals, orders, and position ids
+- `id` for stable journal identity.
+- `entry_date` for time ordering and date filtering.
+- broker ids in `metadata` for MT5 tickets, deals, orders, and position ids.
 
-SQLite event row ids are internal storage row ids only. Application code should use the trade UUID and broker metadata for business logic.
+SQLite event row ids are internal storage ids only. Application logic should use the trade UUID and broker metadata.
 
-## Required Backend Payload Behavior
+## Developer Rules
 
-Backends should preserve these fields exactly when present:
-
-- `id`
-- `token`
-- `direction`
-- `entry_date`
-- `entry_price`
-- `size_sol`
-- `strategy`
-- `rationale`
-- `status`
-- `mode`
-- `source`
-- `expected_profit`
-- `actual_profit`
-- `metadata_json`
-- `tags_json`
-- `created_at`
-- `updated_at`
-
-Event payloads should preserve:
-
-- `trade_id`
-- `event_time`
-- `event_type`
-- `token`
-- `strategy`
-- `direction`
-- `price`
-- `size_sol`
-- `status`
-- `message`
-- `metadata_json`
-
-`metadata_json` and `tags_json` are JSON strings by the time the backend sees them. Return rows should include those same keys so `TradeJournal` can decode them back into dictionaries/lists.
-
-## aiomql Result/Records Mapping
-
-aiomql's `Result` and `TradeRecords` classes record expected and actual profitability around order placement and trade close. This project maps those concepts into the neutral journal schema:
-
-- `expected_profit`: expected profit calculated before or during order submission
-- `actual_profit`: realized profit after broker-confirmed close
-- `metadata`: strategy parameters, timeframe, risk settings, broker ids, and raw broker-history details
-
-For live aiomql execution, `StrategyAiomqlBase` passes `trade_parameters["expected_profit"]` into `TradeJournal` when available. Confirmed closes should update `actual_profit`.
-
-## Testing A Backend
-
-At minimum, a backend should pass the same behavior tested in `tests/test_trade_journal.py`:
-
-- records a signal trade
-- records a lifecycle event
-- updates parent trade status from an event
-- updates exit fields and actual profit
-- records broker history events
-- filters list queries by status and strategy
-- preserves UUID trade ids
-
-Use the in-memory backend in `tests/test_trade_journal.py` as the smallest working example.
-
-## Rules For Developers
-
-- Use `TradeJournal` from application code.
-- Add new database engines under `journal/backends/`.
-- Keep SQL and database driver details out of strategies and aiomql execution code.
-- Keep broker ids and raw broker payloads in `metadata`.
-- Post accounting ledger entries only from broker-confirmed fills/closes, not from raw signals.
+- Use `TradeJournal` from strategies, bots, scripts, and aiomql execution code.
+- Use `TradeRecord` when constructing a full trade object manually.
+- Use `record_signal_trade` when a strategy produces a fresh signal.
+- Add database engines under `journal/backends/`.
+- Keep SQL and database driver details out of strategies and execution adapters.
+- Post accounting ledger entries only from broker-confirmed fills or closes, not from raw signals.

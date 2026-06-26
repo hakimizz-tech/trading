@@ -3,7 +3,7 @@ import unittest
 import uuid
 from pathlib import Path
 
-from journal import JournalEvent, JournalTrade, TRADE_STATUSES, TradeJournal
+from journal import JournalEvent, TRADE_STATUSES, TradeJournal, TradeRecord
 
 
 def assert_uuid(testcase: unittest.TestCase, value: str) -> None:
@@ -114,7 +114,7 @@ class TradeJournalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             journal = TradeJournal(Path(tmpdir) / "journal.sqlite")
             trade_id = journal.record_trade(
-                JournalTrade(
+                TradeRecord(
                     token="SOL",
                     direction="short",
                     entry_date="2026-06-17T10:00:00Z",
