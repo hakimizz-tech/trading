@@ -123,7 +123,7 @@ The module reports the paper's core evaluation family:
 - Signal cadence: newly closed H1 candle by default.
 - Signal source: shared Scalper Major RSI/SMA-20/Marubozu logic.
 - Execution safety:
-  - Uses `StrategyAiomqlBase`.
+  - Uses `AiomqlStrategyBase`.
   - Reuses shared journal and ledger hooks.
   - Reuses broker snapshot gates.
   - Reuses spread, max-open-position, daily-loss, and risk-sizing gates.

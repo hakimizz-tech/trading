@@ -1,4 +1,4 @@
-"""Shared aiomql strategy base and broker-result adapters."""
+"""Shared aiomql strategy lifecycle and broker-result normalizers."""
 
 from __future__ import annotations
 
@@ -26,12 +26,22 @@ from journal import JournalEvent, TradeJournal, utc_now
 from market_data.ohlcv import to_ohlcv_frame as normalize_ohlcv_frame
 
 try:
-    from aiomql import ForexSymbol, OrderType, ScalpTrader, Sessions, Strategy, TimeFrame, Tracker, Trader  # pyright: ignore[reportMissingImports]
+    import aiomql as _aiomql  # pyright: ignore[reportMissingImports]
 except ImportError as exc:  # pragma: no cover - exercised on non-aiomql systems
     AIOMQL_IMPORT_ERROR = exc
-    ForexSymbol = OrderType = ScalpTrader = Sessions = Strategy = TimeFrame = Tracker = Trader = None  # type: ignore[assignment]
+    _aiomql = None
 else:
     AIOMQL_IMPORT_ERROR = None
+
+# Explicit bindings keep optional aiomql exports visible to static analyzers.
+ForexSymbol: Any = getattr(_aiomql, "ForexSymbol", None)
+OrderType: Any = getattr(_aiomql, "OrderType", None)
+ScalpTrader: Any = getattr(_aiomql, "ScalpTrader", None)
+Sessions: Any = getattr(_aiomql, "Sessions", None)
+Strategy: Any = getattr(_aiomql, "Strategy", None)
+TimeFrame: Any = getattr(_aiomql, "TimeFrame", None)
+Tracker: Any = getattr(_aiomql, "Tracker", None)
+Trader: Any = getattr(_aiomql, "Trader", None)
 
 
 logger = logging.getLogger(__name__)
@@ -52,8 +62,14 @@ def require_aiomql() -> None:
         ) from AIOMQL_IMPORT_ERROR
 
 
-class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type: ignore[misc,valid-type]
-    """Base class for aiomql strategies with shared gates and persistence."""
+class AiomqlStrategyBase(Strategy if Strategy is not None else object):  # type: ignore[misc,valid-type]
+    """Template base for aiomql strategies with shared execution controls.
+
+    Subclasses implement :meth:`find_entry` to update ``tracker`` and
+    ``trade_parameters``. This class owns the invariant execution workflow:
+    validation, dry-run handling, live broker gates, submission, journaling,
+    and confirmed-fill accounting.
+    """
 
     parameters: ClassVar[dict[str, Any]] = {
         "timeframe": "M15",
@@ -106,6 +122,7 @@ class StrategyAiomqlBase(Strategy if Strategy is not None else object):  # type:
         raise NotImplementedError
 
     async def trade(self) -> None:
+        """Run one signal-to-execution cycle using the shared template."""
         await self.find_entry()
 
         if self.tracker.order_type is None:

@@ -13,7 +13,7 @@ from execution import BrokerSnapshot, BrokerOrderCheck, evaluate_live_execution_
 from journal import TradeJournal
 ```
 
-Use `execution.aiomql_base` only when writing aiomql-specific strategy classes or aiomql adapter code.
+Use `execution.base` only when writing aiomql-specific strategy classes or aiomql adapter code.
 
 ## Modules
 
@@ -23,7 +23,7 @@ Use `execution.aiomql_base` only when writing aiomql-specific strategy classes o
 | `execution.adapters` | Protocols that broker adapters implement |
 | `execution.gates` | Live execution gates for spread, max positions, daily loss, and sizing |
 | `execution.sizing` | Broker-aware fixed-fractional position sizing |
-| `execution.aiomql_base` | aiomql strategy base and aiomql/MT5 object normalizers |
+| `execution.base` | aiomql strategy lifecycle and aiomql/MT5 object normalizers |
 | `execution.trackers` | Scheduled position-management helpers |
 
 ## State Classes
@@ -283,9 +283,30 @@ size = calculate_risk_position_size(
 
 ## aiomql Integration
 
-### `StrategyAiomqlBase`
+### `AiomqlStrategyBase`
 
-> Shared base class for aiomql strategies.
+> Template base class for aiomql strategies. Subclasses implement signal
+> discovery; the base class owns the common execution lifecycle.
+
+```python
+from execution import AiomqlStrategyBase
+
+
+class MyAiomqlStrategy(AiomqlStrategyBase):
+    async def find_entry(self) -> None:
+        # Update self.tracker and self.trade_parameters.
+        ...
+```
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `parameters` | `ClassVar[dict[str, Any]]` | Shared dry-run, risk, journal, accounting, and execution defaults |
+| `find_entry()` | `async override hook` | Strategy-specific signal discovery implemented by each subclass |
+| `trade()` | `async template method` | Runs signal discovery, gates, submission, journaling, and fill accounting |
+| `trade_parameters` | `dict[str, Any]` | Mutable parameters passed through risk gates and order submission |
+| `snapshot_provider` | `Callable \| None` | Optional broker snapshot dependency for testability and live execution |
+| `journal` | `TradeJournal \| None` | Strategy event and trade persistence service |
+| `ledger` | `TradeLedger \| None` | Confirmed realized P&L accounting service |
 
 | Feature | Description |
 | --- | --- |

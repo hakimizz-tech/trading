@@ -3,12 +3,12 @@
 from typing import Any
 
 try:
-    from execution.aiomql_base import (
+    from execution.base import (
+        AiomqlStrategyBase,
         OrderType,
         ScalpTrader,
         Sessions,
         SnapshotProvider,
-        StrategyAiomqlBase,
         TimeFrame,
         Tracker,
         Trader,
@@ -26,7 +26,7 @@ try:
     )
 except ImportError as exc:  # pragma: no cover - depends on optional aiomql/pandas runtime.
     _AIOMQL_BASE_IMPORT_ERROR = exc
-    OrderType = ScalpTrader = Sessions = SnapshotProvider = StrategyAiomqlBase = TimeFrame = Tracker = Trader = None
+    AiomqlStrategyBase = OrderType = ScalpTrader = Sessions = SnapshotProvider = TimeFrame = Tracker = Trader = None
 
     def aiomql_available() -> bool:
         return False
@@ -103,7 +103,7 @@ __all__ = [
     "ScalpTrader",
     "Sessions",
     "SnapshotProvider",
-    "StrategyAiomqlBase",
+    "AiomqlStrategyBase",
     "TimeFrame",
     "Tracker",
     "Trader",

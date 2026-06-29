@@ -10,10 +10,10 @@ import pandas as pd
 from strategies.BollingerBand.core import BUY, SELL, AdaptiveRegimeConfig, ExitPlan, add_atr, calculate_bollinger_bands
 from strategies.BollingerBand.core import generate_adaptive_bollinger_signals, generate_bb_rsi_signals, generate_bbma_signals
 from strategies.BollingerBand.core import generate_mean_reversion_signals
-from execution import (
+from execution.base import (
+    AiomqlStrategyBase,
     OrderType,
     SnapshotProvider,
-    StrategyAiomqlBase,
     aiomql_available,
     broker_snapshot_from_sources as _broker_snapshot_from_sources,
     extract_broker_fill as _extract_broker_fill,
@@ -28,11 +28,11 @@ from execution import (
 logger = logging.getLogger(__name__)
 
 
-class BollingerBandsAiomqlStrategy(StrategyAiomqlBase):
-    """Bollinger Bands strategy wrapper for aiomql Bot orchestration."""
+class BollingerBandsAiomqlStrategy(AiomqlStrategyBase):
+    """Bollinger Bands strategy for aiomql Bot orchestration."""
 
     parameters: ClassVar[dict[str, Any]] = {
-        **StrategyAiomqlBase.parameters,
+        **AiomqlStrategyBase.parameters,
         "signal_mode": "mean_reversion",
         "adaptive_regime_mode": "hybrid",
         "bb_window": 20,

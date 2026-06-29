@@ -12,7 +12,7 @@ from typing import Any
 
 import pandas as pd
 
-from execution.aiomql_base import OrderType, StrategyAiomqlBase, to_ohlcv_frame
+from execution.base import AiomqlStrategyBase, OrderType, to_ohlcv_frame
 from strategies.ScalperMajorHighVolatility.core import (
     ScalperMajorConfig,
     compute_scalper_major_indicators,
@@ -23,11 +23,11 @@ from strategies.ScalperMajorHighVolatility.core import (
 logger = logging.getLogger(__name__)
 
 
-class ScalperMajorAiomqlStrategy(StrategyAiomqlBase):
+class ScalperMajorAiomqlStrategy(AiomqlStrategyBase):
     """Execute Scalper Major signals through aiomql with shared risk gates."""
 
     parameters = {
-        **StrategyAiomqlBase.parameters,
+        **AiomqlStrategyBase.parameters,
         "strategy_tag": "ScalperMajorHighVolatility",
         "timeframe": "H1",
         "interval": "H1",
