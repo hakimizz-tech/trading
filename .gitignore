@@ -61,6 +61,7 @@ datasets/_raw_yfinance/
 aiomql.txt
 aiomql-*.txt
 aiomql-docs/
+scrapling-docs/
 
 # Strategy source papers / local notes
 strategies/**/*.md
