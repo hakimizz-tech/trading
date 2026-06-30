@@ -71,13 +71,20 @@ def prepare_bollinger_signals(
         signaled["sl_stop_pct"] = stop_loss
         signaled["tp_stop_pct"] = take_profit
 
+    long_entries = signaled["long_entry"].fillna(False).astype(bool)
+    short_entries = signaled["short_entry"].fillna(False).astype(bool)
+    long_exits = signaled["long_exit"].fillna(False).astype(bool) & ~long_entries
+    short_exits = signaled["short_exit"].fillna(False).astype(bool) & ~short_entries
+
     return PreparedSignals(
         data=signaled,
         close=close,
-        long_entries=signaled["long_entry"].fillna(False).astype(bool),
-        long_exits=signaled["long_exit"].fillna(False).astype(bool),
-        short_entries=signaled["short_entry"].fillna(False).astype(bool),
-        short_exits=signaled["short_exit"].fillna(False).astype(bool),
+        long_entries=long_entries,
+        long_exits=long_exits,
+        short_entries=short_entries,
+        short_exits=short_exits,
         stop_loss=stop_loss,
         take_profit=take_profit,
+        signal_columns=("long_entry", "long_exit", "short_entry", "short_exit"),
+        minimum_feature_lag=1,
     )

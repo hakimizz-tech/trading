@@ -173,7 +173,12 @@ class EventDrivenBacktester:
 
             if position is not None:
                 equity = cash + self._unrealized_pnl(position, float(bar["close"]))
-                margin = self.broker.margin_required(position.entry_price, position.volume)
+                leverage = self.execution.provider_data.leverage_for(bar, self.broker)
+                margin = self.broker.margin_required(
+                    position.entry_price,
+                    position.volume,
+                    leverage=leverage,
+                )
                 margin_level = equity / margin if margin > 0 else float("inf")
                 if margin_level <= self.broker.stop_out_level:
                     cash, position = self._close_position(
@@ -346,8 +351,9 @@ class EventDrivenBacktester:
             if item.age > expiry:
                 order_records.append(_order_record(item.order, SimulatedOrderStatus.EXPIRED, timestamp, "expired"))
                 continue
-            if _should_reject(bar, self.execution, rng):
-                order_records.append(_order_record(item.order, SimulatedOrderStatus.REJECTED, timestamp, "broker_rejection"))
+            rejection_reason = _rejection_reason(item.order, bar, self.execution, rng)
+            if rejection_reason is not None:
+                order_records.append(_order_record(item.order, SimulatedOrderStatus.REJECTED, timestamp, rejection_reason))
                 continue
             reference = _order_reference_price(item.order, bar)
             if reference is None:
@@ -374,9 +380,13 @@ class EventDrivenBacktester:
                 slippage_points=slippage_points,
                 point=self.broker.point,
             )
-            required_margin = self.broker.margin_required(price, fill_volume)
+            if not _protective_levels_are_valid(item.order, price, bar, self.broker, self.execution):
+                order_records.append(_order_record(item.order, SimulatedOrderStatus.REJECTED, timestamp, "invalid_stop_level"))
+                continue
+            leverage = self.execution.provider_data.leverage_for(bar, self.broker)
+            required_margin = self.broker.margin_required(price, fill_volume, leverage=leverage)
             existing_margin = (
-                self.broker.margin_required(position.entry_price, position.volume)
+                self.broker.margin_required(position.entry_price, position.volume, leverage=leverage)
                 if position is not None
                 else 0.0
             )
@@ -619,15 +629,44 @@ def _merge_position(
     )
 
 
-def _should_reject(
+def _rejection_reason(
+    order: SimulatedOrder,
     bar: dict[str, Any],
     execution: ExecutionModel,
     rng: np.random.Generator,
-) -> bool:
+) -> str | None:
+    provider = execution.provider_data
+    if provider.halt_on_corporate_action and provider.corporate_action_detected(bar):
+        return "corporate_action_halt"
+    if not provider.is_tradable(bar):
+        return "market_unavailable"
+    if order.direction == "short" and not provider.borrow_available(bar):
+        return "borrow_unavailable"
     raw = bar.get(execution.reject_column, False)
     if bool(raw):
+        return "broker_rejection"
+    if execution.rejection_probability and rng.random() < execution.rejection_probability:
+        return "broker_rejection"
+    return None
+
+
+def _protective_levels_are_valid(
+    order: SimulatedOrder,
+    entry_price: float,
+    bar: dict[str, Any],
+    broker: BrokerProfile,
+    execution: ExecutionModel,
+) -> bool:
+    min_distance = execution.provider_data.min_stop_points_for(bar, broker) * broker.point
+    if min_distance <= 0:
         return True
-    return bool(execution.rejection_probability and rng.random() < execution.rejection_probability)
+    stop_pct = order.metadata.get("stop_loss_pct")
+    target_pct = order.metadata.get("take_profit_pct")
+    if stop_pct is not None and float(stop_pct) * entry_price < min_distance:
+        return False
+    if target_pct is not None and float(target_pct) * entry_price < min_distance:
+        return False
+    return True
 
 
 def _order_record(

@@ -64,6 +64,35 @@ class PreparedSignalsValidationTests(unittest.TestCase):
         self.assertEqual(len(report.warnings), 1)
         self.assertIn("future_return", report.warnings[0])
 
+    def test_provenance_rejects_label_columns_used_as_features(self) -> None:
+        signals = _signals()
+        data = signals.data.assign(rsi=[40.0, 45.0, 50.0], next_return=[0.1, -0.2, 0.3])
+        candidate = PreparedSignals(
+            data=data,
+            close=signals.close,
+            long_entries=signals.long_entries,
+            long_exits=signals.long_exits,
+            short_entries=signals.short_entries,
+            short_exits=signals.short_exits,
+            feature_columns=("rsi", "next_return"),
+            label_columns=("next_return",),
+            signal_columns=("long_entry",),
+            minimum_feature_lag=0,
+        )
+
+        with self.assertRaises(SignalValidationError) as context:
+            candidate.validate(require_provenance=True)
+
+        self.assertIn("label_columns must not overlap feature_columns", context.exception.errors)
+        self.assertIn(
+            "signal_columns reference columns missing from data: long_entry",
+            context.exception.errors,
+        )
+        self.assertIn(
+            "minimum_feature_lag must be at least 1 when provenance is required",
+            context.exception.errors,
+        )
+
 
 class EventDrivenBacktesterTests(unittest.TestCase):
     def test_conservative_parent_bar_collision_uses_stop_first(self) -> None:
@@ -177,6 +206,72 @@ class EventDrivenBacktesterTests(unittest.TestCase):
         result = engine.run(_signals(data=data))
 
         self.assertEqual(result.trades.iloc[0]["exit_reason"], "margin_stop_out")
+
+    def test_provider_outage_rejects_order(self) -> None:
+        data = _ohlc()
+        data["exchange_outage"] = [False, True, False]
+
+        result = _engine().run(_signals(data=data))
+
+        self.assertIn("market_unavailable", set(result.orders["reason"]))
+        self.assertTrue(result.fills.empty)
+
+    def test_provider_borrow_unavailable_rejects_short(self) -> None:
+        data = _ohlc()
+        data["borrow_available"] = [True, False, True]
+        signals = _signals(data=data)
+        short_entries = pd.Series(False, index=data.index, dtype=bool)
+        short_entries.iloc[0] = True
+        short_signals = PreparedSignals(
+            data=data,
+            close=signals.close,
+            long_entries=signals.short_entries.copy(),
+            long_exits=signals.long_exits.copy(),
+            short_entries=short_entries,
+            short_exits=signals.short_exits.copy(),
+        )
+
+        result = _engine().run(short_signals)
+
+        self.assertIn("borrow_unavailable", set(result.orders["reason"]))
+        self.assertTrue(result.fills.empty)
+
+    def test_provider_stop_level_rejects_too_close_protection(self) -> None:
+        data = _ohlc()
+        data["min_stop_points"] = [0.0, 10.0, 0.0]
+
+        result = _engine().run(_signals(data=data, stop=0.01))
+
+        self.assertIn("invalid_stop_level", set(result.orders["reason"]))
+        self.assertTrue(result.fills.empty)
+
+    def test_provider_volume_cap_limits_partial_fill(self) -> None:
+        data = _ohlc(periods=4)
+        data["max_order_volume"] = [10.0, 0.3, 0.3, 0.3]
+        engine = EventDrivenBacktester(
+            broker=_broker(min_volume=0.1, volume_step=0.1),
+            execution=ExecutionModel(latency_bars=1, max_volume_participation=1.0),
+            config=EventBacktestConfig(order_volume=1.0),
+        )
+
+        result = engine.run(_signals(data=data))
+
+        entry_fills = result.fills[result.fills["reason"] == "entry"]
+        self.assertFalse(entry_fills.empty)
+        self.assertTrue((entry_fills["volume"] <= 0.3).all())
+
+    def test_provider_variable_leverage_affects_margin_acceptance(self) -> None:
+        data = _ohlc()
+        data["leverage"] = [10.0, 100.0, 100.0]
+        engine = EventDrivenBacktester(
+            broker=_broker(contract_size=100.0, leverage=1.0),
+            config=EventBacktestConfig(initial_cash=200.0, order_volume=1.0),
+        )
+
+        result = engine.run(_signals(data=data))
+
+        self.assertNotIn("insufficient_margin", set(result.orders["reason"]))
+        self.assertFalse(result.fills.empty)
 
     @unittest.skipUnless(find_spec("vectorbt"), "vectorbt is not installed")
     def test_shared_vectorbt_runner_consumes_prepared_signals(self) -> None:

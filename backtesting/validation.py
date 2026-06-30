@@ -48,6 +48,7 @@ def validate_prepared_signals(
     *,
     raise_on_error: bool = True,
     check_lookahead_names: bool = True,
+    require_provenance: bool = False,
 ) -> SignalValidationReport:
     """Validate a ``PreparedSignals`` object without mutating it."""
     errors: list[str] = []
@@ -112,6 +113,7 @@ def validate_prepared_signals(
                 errors.append(f"{name} must not contain negative distances")
 
     _check_conflicts(signals, errors)
+    _check_provenance(signals, data, errors, warnings, require_provenance=require_provenance)
 
     if check_lookahead_names and isinstance(data, pd.DataFrame):
         suspicious = sorted(str(column) for column in data.columns if _SUSPICIOUS_COLUMN.search(str(column)))
@@ -125,6 +127,50 @@ def validate_prepared_signals(
     if raise_on_error:
         report.require_valid()
     return report
+
+
+def _check_provenance(
+    signals: PreparedSignals,
+    data: pd.DataFrame,
+    errors: list[str],
+    warnings: list[str],
+    *,
+    require_provenance: bool,
+) -> None:
+    feature_columns = tuple(str(column) for column in signals.feature_columns)
+    label_columns = tuple(str(column) for column in signals.label_columns)
+    signal_columns = tuple(str(column) for column in signals.signal_columns)
+
+    if require_provenance and not feature_columns and not signal_columns:
+        errors.append("signal provenance is required but feature_columns and signal_columns are empty")
+
+    available = {str(column) for column in data.columns} if isinstance(data, pd.DataFrame) else set()
+    for group_name, columns in (
+        ("feature_columns", feature_columns),
+        ("label_columns", label_columns),
+        ("signal_columns", signal_columns),
+    ):
+        missing = sorted(column for column in columns if column not in available)
+        if missing:
+            errors.append(f"{group_name} reference columns missing from data: {', '.join(missing)}")
+
+    label_set = set(label_columns)
+    feature_set = set(feature_columns)
+    signal_set = set(signal_columns)
+    if label_set & feature_set:
+        errors.append("label_columns must not overlap feature_columns")
+    if label_set & signal_set:
+        errors.append("label_columns must not overlap signal_columns")
+
+    lag = signals.minimum_feature_lag
+    if lag is not None and lag < 0:
+        errors.append("minimum_feature_lag must not be negative")
+    if require_provenance and (lag is None or lag < 1):
+        errors.append("minimum_feature_lag must be at least 1 when provenance is required")
+    elif lag is None and (feature_columns or signal_columns):
+        warnings.append(
+            "minimum_feature_lag was not provided; semantic look-ahead risk requires strategy review"
+        )
 
 
 def _check_conflicts(signals: PreparedSignals, errors: list[str]) -> None:

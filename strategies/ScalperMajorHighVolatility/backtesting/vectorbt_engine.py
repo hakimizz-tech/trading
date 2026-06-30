@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from importlib import import_module
 from typing import Any
 
 import pandas as pd
 
+from backtesting import PreparedSignals, VectorBTConfig, run_vectorbt
 from strategies.ScalperMajorHighVolatility.core import (
     ScalperMajorConfig,
     ScalperMajorResult,
@@ -35,7 +35,9 @@ class ScalperMajorVectorBTResult:
     pandas_result: ScalperMajorResult
     stats: pd.Series
     metrics: dict[str, float | int | None]
+    vectorbt_metrics: dict[str, float | int | None]
     signals: pd.DataFrame
+    prepared_signals: PreparedSignals
 
 
 def run_scalper_major_vectorbt(
@@ -45,7 +47,6 @@ def run_scalper_major_vectorbt(
     vectorbt_config: ScalperMajorVectorBTConfig | None = None,
 ) -> ScalperMajorVectorBTResult:
     """Run Scalper Major through vectorbt from prepared entry/exit signals."""
-    vbt = _require_vectorbt()
     cfg = strategy_config or ScalperMajorConfig()
     vbt_cfg = vectorbt_config or ScalperMajorVectorBTConfig(
         init_cash=cfg.initial_cash,
@@ -53,34 +54,39 @@ def run_scalper_major_vectorbt(
         slippage=cfg.slippage,
     )
     signals = generate_scalper_major_signals(ohlcv, cfg)
-    portfolio = vbt.Portfolio.from_signals(
-        close=ohlcv["close"],
-        entries=signals["long_entry"],
-        exits=signals["long_exit"],
-        short_entries=signals["short_entry"],
-        short_exits=signals["short_exit"],
-        init_cash=vbt_cfg.init_cash,
-        fees=vbt_cfg.fees,
-        slippage=vbt_cfg.slippage,
-        size=vbt_cfg.size,
-        size_type="percent",
-        freq=vbt_cfg.freq,
+    prepared = _prepare_scalper_major_signals(ohlcv, signals)
+    shared = run_vectorbt(
+        prepared,
+        config=VectorBTConfig(
+            init_cash=vbt_cfg.init_cash,
+            fees=vbt_cfg.fees,
+            slippage=vbt_cfg.slippage,
+            size=vbt_cfg.size,
+            size_type="percent",
+            freq=vbt_cfg.freq,
+        ),
     )
     pandas_result = backtest_scalper_major(ohlcv, cfg)
     return ScalperMajorVectorBTResult(
-        portfolio=portfolio,
+        portfolio=shared.portfolio,
         pandas_result=pandas_result,
-        stats=portfolio.stats(),
+        stats=shared.stats,
         metrics=pandas_result.metrics,
+        vectorbt_metrics=shared.metrics,
         signals=signals,
+        prepared_signals=prepared,
     )
 
 
-def _require_vectorbt() -> Any:
-    try:
-        return import_module("vectorbt")
-    except ImportError as exc:
-        raise RuntimeError(
-            "vectorbt is not installed. Install research backtesting dependencies with "
-            "`python -m pip install -r requirements.txt`."
-        ) from exc
+def _prepare_scalper_major_signals(ohlcv: pd.DataFrame, signals: pd.DataFrame) -> PreparedSignals:
+    data = ohlcv.join(signals, how="left")
+    return PreparedSignals(
+        data=data,
+        close=ohlcv["close"].astype(float),
+        long_entries=signals["long_entry"].fillna(False).astype(bool),
+        long_exits=signals["long_exit"].fillna(False).astype(bool),
+        short_entries=signals["short_entry"].fillna(False).astype(bool),
+        short_exits=signals["short_exit"].fillna(False).astype(bool),
+        signal_columns=("long_entry", "long_exit", "short_entry", "short_exit"),
+        minimum_feature_lag=1,
+    )

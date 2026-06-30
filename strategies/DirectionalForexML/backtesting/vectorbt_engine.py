@@ -3,17 +3,18 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from importlib import import_module
 from typing import Any
 
 import pandas as pd
 
+from backtesting import PreparedSignals, VectorBTConfig, run_vectorbt
 from strategies.DirectionalForexML.core import (
     DirectionalForexMLArtifact,
     DirectionalForexMLConfig,
     backtest_directional_forex_ml,
     generate_directional_ml_signals,
 )
+from strategies.DirectionalForexML.features import compute_directional_features
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,9 @@ class DirectionalForexMLVectorBTResult:
     portfolio: Any
     pandas_result: Any
     stats: pd.Series
+    metrics: dict[str, float | int | None]
     signals: pd.DataFrame
+    prepared_signals: PreparedSignals
 
 
 def run_directional_forex_ml_vectorbt(
@@ -42,44 +45,71 @@ def run_directional_forex_ml_vectorbt(
     artifact: DirectionalForexMLArtifact | None = None,
     strategy_config: DirectionalForexMLConfig | None = None,
     vectorbt_config: DirectionalForexMLVectorBTConfig | None = None,
+    macro: pd.DataFrame | None = None,
 ) -> DirectionalForexMLVectorBTResult:
     """Run ML signals through vectorbt."""
-    vbt = _require_vectorbt()
     cfg = strategy_config or DirectionalForexMLConfig()
     pandas_result = (
-        backtest_directional_forex_ml(ohlcv, symbol=symbol, config=cfg)
+        backtest_directional_forex_ml(ohlcv, symbol=symbol, config=cfg, macro=macro)
         if artifact is None
         else None
     )
     trained = artifact or pandas_result.artifact
-    signals = generate_directional_ml_signals(ohlcv, trained)
+    signals = generate_directional_ml_signals(ohlcv, trained, macro=macro)
     vbt_cfg = vectorbt_config or DirectionalForexMLVectorBTConfig(init_cash=cfg.initial_cash)
     fees = ohlcv["close"].map(trained.cost_spec.one_way_pct).reindex(signals.index).fillna(0.0)
-    portfolio = vbt.Portfolio.from_signals(
-        close=ohlcv["close"].reindex(signals.index),
-        entries=signals["long_entry"],
-        exits=signals["long_exit"],
-        short_entries=signals["short_entry"],
-        short_exits=signals["short_exit"],
-        init_cash=vbt_cfg.init_cash,
-        fees=fees,
-        size=vbt_cfg.size,
-        size_type="percent",
-        freq=vbt_cfg.freq,
+    prepared = _prepare_directional_forex_ml_signals(ohlcv, signals, trained, macro=macro)
+    shared = run_vectorbt(
+        prepared,
+        config=VectorBTConfig(
+            init_cash=vbt_cfg.init_cash,
+            fees=fees,
+            size=vbt_cfg.size,
+            size_type="percent",
+            freq=vbt_cfg.freq,
+        ),
     )
     return DirectionalForexMLVectorBTResult(
-        portfolio=portfolio,
+        portfolio=shared.portfolio,
         pandas_result=pandas_result,
-        stats=portfolio.stats(),
+        stats=shared.stats,
+        metrics=shared.metrics,
         signals=signals,
+        prepared_signals=prepared,
     )
 
 
-def _require_vectorbt() -> Any:
-    try:
-        return import_module("vectorbt")
-    except ImportError as exc:
-        raise RuntimeError(
-            "vectorbt is not installed. Install research backtesting dependencies with "
-            "`python -m pip install -r requirements.txt`."
-        ) from exc
+def _prepare_directional_forex_ml_signals(
+    ohlcv: pd.DataFrame,
+    signals: pd.DataFrame,
+    artifact: DirectionalForexMLArtifact,
+    macro: pd.DataFrame | None = None,
+) -> PreparedSignals:
+    features = compute_directional_features(
+        ohlcv,
+        feature_set=artifact.config.feature_set,
+        macro=macro,
+        include_macro=artifact.config.use_macro_features,
+    )
+    data = ohlcv.reindex(signals.index).join(features.reindex(signals.index), how="left")
+    data = data.join(signals, how="left")
+    return PreparedSignals(
+        data=data,
+        close=ohlcv["close"].reindex(signals.index).astype(float),
+        long_entries=signals["long_entry"].fillna(False).astype(bool),
+        long_exits=signals["long_exit"].fillna(False).astype(bool),
+        short_entries=signals["short_entry"].fillna(False).astype(bool),
+        short_exits=signals["short_exit"].fillna(False).astype(bool),
+        feature_columns=artifact.feature_columns,
+        signal_columns=(
+            "probability_up",
+            "expected_move_pct",
+            "one_way_cost_pct",
+            "cost_hurdle_pct",
+            "long_entry",
+            "long_exit",
+            "short_entry",
+            "short_exit",
+        ),
+        minimum_feature_lag=1,
+    )

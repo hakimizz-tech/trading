@@ -5,6 +5,47 @@ validation, shared vectorbt and Backtrader runners, and a deterministic custom
 event simulator. Strategy logic prepares signals once and sends the same
 validated data through fast research and realistic execution paths.
 
+Use this module as the common bridge between strategy research and execution
+validation. A strategy should calculate its own indicators, convert them into
+`PreparedSignals`, validate that object, and then choose the right engine:
+vectorbt for fast screening, Backtrader for event-driven order behavior, or the
+custom event engine for broker-profile stress testing.
+
+## Module Concepts
+
+| Concept | Type | Description |
+| --- | --- | --- |
+| Strategy | Package/module | Owns the trading idea, indicators, entries, exits, and parameter defaults |
+| `PreparedSignals` | Dataclass | Broker-neutral input contract consumed by every shared backtesting engine |
+| Validation | Function/method | Runtime checks that catch bad indexes, signal conflicts, invalid prices, stop errors, and obvious leakage risk |
+| Provenance | Metadata | Optional declaration of which columns are features, labels, and final signals, used to reduce semantic look-ahead mistakes |
+| vectorbt engine | Function | Fast vectorized simulator for screening, optimization, and broad research |
+| Backtrader engine | Function | Bar-by-bar simulator for order callbacks, protective orders, OCO behavior, and native Backtrader analyzers |
+| Event engine | Class | Deterministic broker-neutral simulator for spread, slippage, latency, partial fills, rejections, margin, swaps, and provider constraints |
+| Broker profile | Dataclass | Instrument contract, lot, spread, commission, swap, margin, and stop-distance assumptions |
+| Provider data model | Dataclass | Optional column mapping for venue outages, borrow availability, corporate actions, variable leverage, and volume caps |
+| Result object | Dataclass | Engine output containing metrics, trades, orders, fills, equity, returns, and drawdown |
+
+## Terminology
+
+| Term | Type | Description |
+| --- | --- | --- |
+| OHLCV | DataFrame columns | Open, high, low, close, and volume market bars |
+| Entry signal | Boolean Series | A `True` value requesting a new long or short position |
+| Exit signal | Boolean Series | A `True` value requesting closure of an existing position |
+| Stop-loss distance | Float Series | Fractional distance from entry price, such as `0.02` for 2% |
+| Take-profit distance | Float Series | Fractional profit target from entry price, such as `0.04` for 4% |
+| Feature column | DataFrame column | Input used by strategy logic to create signals, such as RSI, volatility, or moving-average slope |
+| Label column | DataFrame column | Future/target value used for research or ML training; it must not be used as a current-bar signal feature |
+| Signal column | DataFrame column | Stored final signal or diagnostic column, such as `long_entry` or `regime` |
+| Provenance | Tuple fields | Audit metadata stored on `PreparedSignals` to document feature, label, and signal origin |
+| Look-ahead | Research defect | Any use of future information to make a current-bar decision |
+| Minimum feature lag | Integer | Minimum number of bars between a feature value and the signal that consumes it |
+| Collision policy | Enum | Assumption used when one bar touches both stop loss and take profit |
+| Partial fill | Order state | Only part of requested volume was filled because simulated liquidity was limited |
+| Provider constraint | Data column | Historical availability rule such as `borrow_available=False` or `exchange_outage=True` |
+| Broker calibration | Process | Adjusting contract, margin, spread, commission, swap, and stop-level assumptions to match a real broker |
+
 ## Responsibilities
 
 | Layer | Responsibility |
@@ -23,10 +64,18 @@ execution layer.
 
 ```python
 from backtesting import (
+    BacktraderConfig,
+    BrokerProfile,
+    EventBacktestConfig,
     EventDrivenBacktester,
+    ExecutionModel,
     PreparedSignals,
+    ProviderDataModel,
+    VectorBTConfig,
+    VectorBTTargetOrdersConfig,
     run_backtrader,
     run_vectorbt,
+    run_vectorbt_target_orders,
 )
 ```
 
@@ -45,6 +94,10 @@ entry, exit, and optional stop series.
 | `short_exits` | `pandas.Series` | Boolean signal that closes a short position when `True` |
 | `stop_loss` | `pandas.Series \| None` | Optional non-negative stop-loss distance as a fraction of entry price |
 | `take_profit` | `pandas.Series \| None` | Optional non-negative take-profit distance as a fraction of entry price |
+| `feature_columns` | `tuple[str, ...]` | Optional names of strategy feature columns used to create the signals |
+| `label_columns` | `tuple[str, ...]` | Optional names of future/target columns used only for research labels |
+| `signal_columns` | `tuple[str, ...]` | Optional names of final signal columns stored in `data` |
+| `minimum_feature_lag` | `int \| None` | Minimum bars by which features are lagged before they can affect a signal |
 
 For vectorbt, a stop value of `0.02` means 2% from the entry price. It does not
 mean an absolute price of `0.02`.
@@ -73,10 +126,15 @@ it automatically before simulation.
 | Negative or non-finite stop distance | Error |
 | Conflicting entry/exit signals | Error |
 | Columns named like `future`, `target`, `label`, or `lead` | Warning requiring human review |
+| Missing provenance when `require_provenance=True` | Error |
+| Label columns reused as feature or signal columns | Error |
+| `minimum_feature_lag < 1` when provenance is required | Error |
 
 Column-name checks can identify obvious leakage but cannot prove that strategy
-logic is free from look-ahead. Walk-forward tests and code review remain
-required.
+logic is free from look-ahead. For ML and research-heavy strategies, populate
+`feature_columns`, `label_columns`, `signal_columns`, and
+`minimum_feature_lag`, then call `signals.validate(require_provenance=True)`.
+Walk-forward tests and code review remain required.
 
 ```python
 import pandas as pd
@@ -108,6 +166,9 @@ def prepare_signals(data: pd.DataFrame) -> PreparedSignals:
         short_exits=pd.Series(False, index=frame.index, dtype=bool),
         stop_loss=pd.Series(0.02, index=frame.index, dtype=float),
         take_profit=pd.Series(0.04, index=frame.index, dtype=float),
+        feature_columns=("fast_sma", "slow_sma"),
+        signal_columns=("long_entry", "long_exit"),
+        minimum_feature_lag=1,
     )
 ```
 
@@ -140,6 +201,37 @@ print(report.warnings)
 signals.validate()
 ```
 
+### Provenance Validation
+
+Provenance is most useful for ML strategies and research modules where the
+dataset contains both current-bar features and future-bar labels. It does not
+prove a strategy is correct, but it makes common mistakes harder to miss.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `feature_columns` | `tuple[str, ...]` | Columns that strategy logic is allowed to use for signal generation |
+| `label_columns` | `tuple[str, ...]` | Future/target columns used for training or evaluation only |
+| `signal_columns` | `tuple[str, ...]` | Final strategy signal columns stored in `PreparedSignals.data` |
+| `minimum_feature_lag` | `int` | Number of bars features are shifted before influencing a signal |
+| `require_provenance` | `bool` | Validation flag that turns missing/unsafe provenance into errors |
+
+```python
+signals = PreparedSignals(
+    data=frame,
+    close=frame["close"],
+    long_entries=frame["long_entry"].astype(bool),
+    long_exits=frame["long_exit"].astype(bool),
+    short_entries=frame["short_entry"].astype(bool),
+    short_exits=frame["short_exit"].astype(bool),
+    feature_columns=("rsi_14", "atr_14", "sma_slope"),
+    label_columns=("next_5_bar_return",),
+    signal_columns=("long_entry", "long_exit", "short_entry", "short_exit"),
+    minimum_feature_lag=1,
+)
+
+signals.validate(require_provenance=True)
+```
+
 ## Choosing An Engine
 
 | Engine | Function | Best use | Main trade-off |
@@ -153,6 +245,10 @@ Backtrader and the custom event engine before MT5 Strategy Tester and demo
 trading.
 
 ## Shared vectorbt Engine
+
+Use `run_vectorbt()` when a strategy has one close series plus long/short
+entry and exit signals. This is the right fit for Bollinger Band, Scalper
+Major signal research, and ML directional classifiers.
 
 ```python
 from backtesting import VectorBTConfig, run_vectorbt
@@ -176,6 +272,44 @@ print(result.trades)
 The shared runner adds stop-loss and take-profit arrays only when present.
 Strategy-specific vectorbt engines may still be used when a strategy requires
 special sizing, optimization, or result fields.
+
+### Target-Order vectorbt Engine
+
+Use `run_vectorbt_target_orders()` when a strategy produces portfolio target
+weights rather than simple entry/exit booleans. This is the right fit for
+monthly rotation, ETF basket, and allocation strategies.
+
+```python
+from backtesting import VectorBTTargetOrdersConfig, run_vectorbt_target_orders
+
+result = run_vectorbt_target_orders(
+    close=prices,
+    target_orders=target_orders,
+    config=VectorBTTargetOrdersConfig(
+        init_cash=10_000.0,
+        fees=0.0002,
+        slippage=0.0001,
+        freq="1d",
+        direction="longonly",
+    ),
+)
+
+print(result.metrics)
+print(result.equity)
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `close` | `pandas.DataFrame` | Asset price matrix, one column per symbol |
+| `target_orders` | `pandas.DataFrame` | Sparse target-percent order matrix aligned to `close` |
+| `init_cash` | `float` | Starting capital |
+| `fees` | `Any` | Proportional fees accepted by vectorbt, scalar or aligned array-like |
+| `fixed_fees` | `Any` | Fixed fees accepted by vectorbt, scalar or aligned array-like |
+| `slippage` | `Any` | Slippage accepted by vectorbt, scalar or aligned array-like |
+| `freq` | `str \| None` | Bar frequency used by vectorbt metrics |
+| `direction` | `str` | vectorbt direction mode, such as `longonly` or `both` |
+| `cash_sharing` | `bool` | Whether all columns share one cash pool |
+| `group_by` | `bool \| Any` | vectorbt grouping argument for portfolio aggregation |
 
 ## Shared Backtrader Engine
 
@@ -258,6 +392,7 @@ from backtesting import (
     EventBacktestConfig,
     EventDrivenBacktester,
     ExecutionModel,
+    ProviderDataModel,
 )
 
 broker = BrokerProfile(
@@ -283,6 +418,7 @@ engine = EventDrivenBacktester(
         slippage_points=2.0,
         max_volume_participation=0.10,
         allow_partial_fills=True,
+        provider_data=ProviderDataModel(),
     ),
     config=EventBacktestConfig(
         initial_cash=10_000.0,
@@ -311,6 +447,7 @@ result = engine.run(signals, lower_timeframe=m1_ohlcv)
 | `swap_short_per_lot_per_day` | `float` | Daily short financing amount |
 | `margin_call_level` | `float` | Equity-to-margin level that blocks additional exposure |
 | `stop_out_level` | `float` | Equity-to-margin level that forces liquidation |
+| `min_stop_distance_points` | `float` | Broker minimum stop/target distance from entry in points |
 
 ### `ExecutionModel`
 
@@ -327,7 +464,42 @@ result = engine.run(signals, lower_timeframe=m1_ohlcv)
 | `liquidity_column` | `str` | Data column used as available bar volume |
 | `reject_column` | `str` | Boolean data column forcing broker rejection |
 | `collision_policy` | `IntrabarCollisionPolicy` | Stop/target ordering assumption for ambiguous bars |
+| `provider_data` | `ProviderDataModel` | Optional column mapping for outages, borrow, leverage, stop levels, and corporate actions |
 | `seed` | `int` | Random seed for reproducible rejection simulation |
+
+### `ProviderDataModel`
+
+`ProviderDataModel` describes optional market, exchange, and broker columns in
+the OHLCV frame. If a column is absent, the engine uses the broker defaults.
+This keeps provider-specific behavior out of strategy logic while still making
+simulations less naive.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `tradable_column` | `str` | Boolean column; `False` rejects new orders because the instrument is unavailable |
+| `outage_column` | `str` | Boolean column; `True` rejects new orders because the venue is unavailable |
+| `borrow_available_column` | `str` | Boolean column; `False` rejects short entries |
+| `leverage_column` | `str` | Per-bar leverage override for margin calculations |
+| `max_volume_column` | `str` | Per-bar maximum order volume cap before partial-fill logic |
+| `min_stop_points_column` | `str` | Per-bar broker stop/target minimum distance in points |
+| `split_factor_column` | `str` | Corporate action marker; values other than `1.0` can halt new orders |
+| `dividend_column` | `str` | Corporate action marker; non-zero values can halt new orders |
+| `halt_on_corporate_action` | `bool` | Whether split/dividend markers reject new orders until data is adjusted |
+
+Example provider-aware columns:
+
+```python
+signals.data["exchange_outage"] = False
+signals.data["borrow_available"] = True
+signals.data["leverage"] = 30.0
+signals.data["min_stop_points"] = 50.0
+signals.data["max_order_volume"] = signals.data["volume"] * 0.10
+```
+
+The simulator uses these fields to reject orders, cap liquidity, apply variable
+leverage, and enforce broker stop-distance rules. Corporate action fields do
+not adjust prices by themselves; they halt new orders by default so the dataset
+can be corrected upstream.
 
 ### `EventBacktestConfig`
 
@@ -440,14 +612,14 @@ Promotion should require agreement on signal timestamps, trade direction,
 costs, position sizing, and drawdown within documented tolerances. A stage
 failure sends the strategy back to research rather than being ignored.
 
-## Remaining Limitations
+## Limitations And Mitigations
 
-- Indicator and signal generation intentionally remain strategy concerns.
-- Column-name leakage warnings cannot detect every semantic look-ahead error.
-- Bar volume is only a liquidity proxy; true order-book queue position is not
-  available from OHLCV.
-- Margin formulas are generic and must be calibrated against broker rules.
-- Corporate actions, borrow availability, exchange outages, variable leverage,
-  and broker-specific stop levels require additional provider models.
-- No historical simulator can guarantee live fills. Demo trading and broker
-  reconciliation remain mandatory before limited deployment.
+| Limitation | Mitigation in this package | Still required before live |
+| --- | --- | --- |
+| Indicator and signal generation are strategy concerns | Keep strategy `core.py` responsible for indicators and return `PreparedSignals` | Strategy-specific tests for indicators, signal timing, and no look-ahead |
+| Column-name leakage checks are imperfect | Optional provenance fields and `validate(require_provenance=True)` catch label/feature/signal misuse | Code review, walk-forward validation, and research notebooks that prove feature lagging |
+| Bar volume is only a liquidity proxy | `ExecutionModel.max_volume_participation` and `ProviderDataModel.max_volume_column` cap fills and create partial fills | Order-book, tick, or broker execution data when available |
+| Margin formulas are generic | `BrokerProfile` plus per-bar `leverage_column` calibrate margin pressure and stop-out behavior | Broker/demo comparison against MT5 or target venue margin reports |
+| Corporate actions and venue outages are not visible in plain OHLCV | `ProviderDataModel` can halt orders on splits, dividends, tradability, or outage columns | Upstream adjusted datasets and provider-specific calendars |
+| Borrow and broker stop-level rules vary by instrument | Borrow availability and minimum stop-distance columns can reject invalid trades | Broker symbol metadata and historical borrow/shortability data |
+| Historical fills are estimates | vectorbt, Backtrader, and the custom event engine provide progressively stricter simulations | MT5 Strategy Tester, aiomql dry run, demo trading, journal/ledger reconciliation, then limited live deployment |

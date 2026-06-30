@@ -6,6 +6,7 @@ from backtesting.execution_models import (
     BrokerProfile,
     ExecutionModel,
     IntrabarCollisionPolicy,
+    ProviderDataModel,
     SimulatedFill,
     SimulatedOrder,
     SimulatedOrderStatus,
@@ -13,7 +14,14 @@ from backtesting.execution_models import (
 )
 from backtesting.signals import PreparedSignals
 from backtesting.validation import SignalValidationError, SignalValidationReport, validate_prepared_signals
-from backtesting.vectorbt_engine import VectorBTConfig, VectorBTResult, run_vectorbt
+from backtesting.vectorbt_engine import (
+    VectorBTConfig,
+    VectorBTResult,
+    VectorBTTargetOrdersConfig,
+    VectorBTTargetOrdersResult,
+    run_vectorbt,
+    run_vectorbt_target_orders,
+)
 
 __all__ = [
     "BrokerProfile",
@@ -25,6 +33,7 @@ __all__ = [
     "ExecutionModel",
     "IntrabarCollisionPolicy",
     "PreparedSignals",
+    "ProviderDataModel",
     "SignalValidationError",
     "SignalValidationReport",
     "SimulatedFill",
@@ -33,7 +42,10 @@ __all__ = [
     "SimulatedOrderType",
     "VectorBTConfig",
     "VectorBTResult",
+    "VectorBTTargetOrdersConfig",
+    "VectorBTTargetOrdersResult",
     "run_vectorbt",
+    "run_vectorbt_target_orders",
     "run_backtrader",
     "validate_prepared_signals",
 ]

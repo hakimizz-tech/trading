@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from importlib import import_module
 from typing import Any
 
 import pandas as pd
 
+from backtesting import VectorBTTargetOrdersConfig, run_vectorbt_target_orders
 from strategies.ConnorsResearchWeeklyMeanReversion.core import (
     ConnorsWeeklyMeanReversionConfig,
     ConnorsWeeklyMeanReversionResult,
@@ -49,38 +49,38 @@ def run_connors_vectorbt(
     vectorbt_config: ConnorsVectorBTConfig | None = None,
 ) -> ConnorsVectorBTResult:
     """Run Connors Weekly Mean Reversion through vectorbt target orders."""
-    vbt = _require_vectorbt()
     cfg = strategy_config or ConnorsWeeklyMeanReversionConfig()
     vbt_cfg = vectorbt_config or ConnorsVectorBTConfig(init_cash=cfg.initial_cash, fees=cfg.trading_cost)
     target_weights, trades = generate_connors_target_weights(prices, volumes, cfg)
     target_orders = _target_order_matrix(target_weights)
-    portfolio = vbt.Portfolio.from_orders(
-        close=prices,
-        size=target_orders,
-        size_type=vbt.portfolio.enums.SizeType.TargetPercent,
-        direction="longonly",
-        init_cash=vbt_cfg.init_cash,
-        cash_sharing=True,
-        group_by=True,
-        fees=vbt_cfg.fees,
-        slippage=vbt_cfg.slippage,
-        freq=vbt_cfg.freq,
+    shared = run_vectorbt_target_orders(
+        prices,
+        target_orders,
+        config=VectorBTTargetOrdersConfig(
+            init_cash=vbt_cfg.init_cash,
+            fees=vbt_cfg.fees,
+            slippage=vbt_cfg.slippage,
+            freq=vbt_cfg.freq,
+            direction="longonly",
+        ),
     )
-    equity = _portfolio_series(portfolio.value)
-    returns = equity.pct_change(fill_method=None).fillna(0.0)
-    drawdown = equity / equity.cummax() - 1.0
     pandas_result = backtest_connors_weekly_mean_reversion(prices, volumes, cfg)
-    metrics = compute_portfolio_metrics(returns, equity, drawdown, trades, cfg)
-    pandas_result = replace(pandas_result, returns=returns, equity=equity, drawdown=drawdown, metrics=metrics)
-    stats = portfolio.stats()
+    metrics = compute_portfolio_metrics(shared.returns, shared.equity, shared.drawdown, trades, cfg)
+    pandas_result = replace(
+        pandas_result,
+        returns=shared.returns,
+        equity=shared.equity,
+        drawdown=shared.drawdown,
+        metrics=metrics,
+    )
     return ConnorsVectorBTResult(
-        portfolio=portfolio,
+        portfolio=shared.portfolio,
         pandas_result=pandas_result,
         metrics=metrics,
-        stats=stats,
-        equity=equity,
-        returns=returns,
-        drawdown=drawdown,
+        stats=shared.stats,
+        equity=shared.equity,
+        returns=shared.returns,
+        drawdown=shared.drawdown,
         target_orders=target_orders,
     )
 
@@ -91,23 +91,3 @@ def _target_order_matrix(target_weights: pd.DataFrame) -> pd.DataFrame:
     orders = target_weights.where(changed).shift(1)
     return orders.dropna(how="all").reindex(target_weights.index)
 
-
-def _portfolio_series(fn: Any) -> pd.Series:
-    value = fn()
-    if isinstance(value, pd.DataFrame):
-        if value.shape[1] == 1:
-            return value.iloc[:, 0].astype(float)
-        return value.sum(axis=1).astype(float)
-    if isinstance(value, pd.Series):
-        return value.astype(float)
-    return pd.Series(value, dtype=float)
-
-
-def _require_vectorbt() -> Any:
-    try:
-        return import_module("vectorbt")
-    except ImportError as exc:
-        raise RuntimeError(
-            "vectorbt is not installed. Install research backtesting dependencies with "
-            "`python -m pip install -r requirements.txt`."
-        ) from exc

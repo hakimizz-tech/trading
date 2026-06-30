@@ -25,16 +25,22 @@ class PreparedSignals:
     short_exits: pd.Series
     stop_loss: pd.Series | None = None
     take_profit: pd.Series | None = None
+    feature_columns: tuple[str, ...] = ()
+    label_columns: tuple[str, ...] = ()
+    signal_columns: tuple[str, ...] = ()
+    minimum_feature_lag: int | None = None
 
     def validate(
         self,
         *,
         raise_on_error: bool = True,
         check_lookahead_names: bool = True,
+        require_provenance: bool = False,
     ) -> SignalValidationReport:
         """Validate alignment, values, signal types, stops, and obvious leakage."""
         return validate_prepared_signals(
             self,
             raise_on_error=raise_on_error,
             check_lookahead_names=check_lookahead_names,
+            require_provenance=require_provenance,
         )
